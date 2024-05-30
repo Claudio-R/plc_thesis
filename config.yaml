@@ -1,0 +1,35 @@
+version: '2.0.0'
+batch_size: 64
+n_epochs: 2
+steps_per_epoch: 20
+learning_rate: 0.001
+sample_rate: 44100
+
+training_metadata_path: meta/training.csv
+validation_metadata_path: meta/validation.csv
+test_metadata_path: meta/test.csv
+plc_challenge_path: meta/plc_challenge_2024_val_subsample.csv
+tests_dir: tests
+
+segment_dur: 2 # seconds
+num_workers: 8
+pin_memory: true
+resume: true
+save: true
+epoch_to_save: 1
+
+dac:
+  n_codebooks: 9
+  codebook_size: 1024
+  model_type: 44khz
+  model_bitrate: 8kbps
+  device: cpu # dac it's likely not to work with cuda on lab machines
+
+transformer:
+  d_model: 512
+  d_attn: 512
+  n_heads: 8
+  n_layers: 4
+  dropout: 0.1
+  dropout_attn: 0.0
+  device: cuda:1
