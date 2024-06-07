@@ -218,8 +218,7 @@ class Transformer(nn.Module):
     """ Transformer model """
     def __init__(self, config):
         super().__init__()
-        self.sample_rate = config["sample_rate"]
-        self.context_length = self.sample_rate * config["segment_dur"]
+        self.sample_rate = config["codec"]["sample_rate"]
         self.n_codebooks = config["codec"]["n_codebooks"]
         self.codebook_size = config["codec"]["codebook_size"]
         self.d_model = config["transformer"]["d_model"]
@@ -229,6 +228,7 @@ class Transformer(nn.Module):
         self.dropout = config["transformer"]["dropout"]
         self.dropout_attn = config["transformer"]["dropout_attn"]
         self.device = config["transformer"]["device"]
+        self.context_length = self.sample_rate * config["segment_dur"]
 
         self.input_embeddings = InputEmbeddings(self.n_codebooks, self.codebook_size, self.d_model)
         self.decoder = TransformerDecoder(self.n_layers, self.d_model, self.d_attn, self.n_heads, self.dropout, self.dropout_attn)

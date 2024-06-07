@@ -4,10 +4,9 @@ n_epochs: 50
 steps_per_epoch: 500
 learning_rate: 0.001
 sample_rate: 48000
-packet_dim: 512
+packet_dim: 320
 segment_dur: 2 # seconds, more gives problem with the dataset
 num_workers: 8
-pin_memory: true
 resume: false
 save: true
 epoch_to_save: 5

@@ -71,7 +71,6 @@ def train(config_path):
     validation_metadata_path = config['validation_metadata_path']
     segment_dur = config['segment_dur']
     num_workers = config['num_workers']
-    pin_memory = config['pin_memory']
     transformer_device = config["transformer"]['device']
     codec_device = config["codec"]['device']
     version = config['version']
@@ -110,6 +109,7 @@ def train(config_path):
         print(f"\nEpoch {epoch+1}/{epochs[-1]+1}")
         training_loop(train_loader, codec, transformer, code_loss_fn, optimizer)
         avg_audio_loss, avg_code_loss = validation_loop(val_loader, codec, transformer, audio_loss_fn, code_loss_fn)
-        if config['save']: save(version, epoch+1, transformer, optimizer, avg_audio_loss, avg_code_loss, config['epoch_to_save'])
+        if config['save']:
+            save(version, epoch+1, transformer, optimizer, avg_audio_loss, avg_code_loss, config['epoch_to_save'])
 
     print("Done!")

@@ -40,11 +40,14 @@ def test_loop(tests_dir, test_ID, dataloader, codec, transformer, version, sr=44
             # Simulate_packet_loss
             tgt_wave24kHz_lost = simulate_packet_loss(tgt_wave24kHz, trace, packet_dim=codec.frame_dim)
 
+
             # Inference
             codes_lost = codec.encode(tgt_wave24kHz_lost)
+            sequence_length = int(transformer.context_length / codec.frame_dim)
             for i, loss in enumerate(trace):
                 if loss:
-                    src_codes = codes_lost[..., :i]
+                    first_idx = max(0, i - sequence_length)
+                    src_codes = codes_lost[..., first_idx:i]
                     logits = transformer(src_codes)
                     codebook_index_probs = torch.nn.functional.softmax(logits, dim=-1)
                     pred_codes = torch.argmax(codebook_index_probs, dim=-1)

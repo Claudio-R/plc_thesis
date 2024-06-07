@@ -227,8 +227,7 @@ class Transformer(nn.Module):
             n_heads: int = 8,
             n_layers: int = 6,
             dropout: float = 0.1,
-            dropout_attn: float = 0.0,
-            input_length: int = 1024
+            dropout_attn: float = 0.0
     ):
         super().__init__()
         self.n_codebooks = n_codebooks
@@ -237,7 +236,6 @@ class Transformer(nn.Module):
         self.n_heads = n_heads
         self.n_layers = n_layers
         self.dropout = dropout
-        self.input_length = input_length
 
         self.input_projection = InputProjections(n_codebooks, d_model)
         self.decoder = TransformerDecoder(n_layers, d_model, d_attn, n_heads, dropout, dropout_attn)

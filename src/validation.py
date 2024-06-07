@@ -2,10 +2,9 @@ import yaml
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import librosa
 
 from .dataset import ValidationDataset
-from .utils import resume_from_checkpoint, load_transformer, save
+from .utils import resume_from_checkpoint, load_transformer, load_codec, save
 
 def validation_loop(dataloader, codec, transformer, audio_loss_fn, code_loss_fn):
     transformer.eval()
@@ -22,8 +21,9 @@ def validation_loop(dataloader, codec, transformer, audio_loss_fn, code_loss_fn)
             src_codes = codes[..., :-1]
             tgt_codes = codes[..., 1:]
 
-            tgt_audio = codec.decode(tgt_codes).to('cpu')
-            tgt_audio = librosa.resample(tgt_audio.numpy(), orig_sr=codec.sample_rate, target_sr=transformer.sample_rate)
+            tgt_audio = codec.decode(tgt_codes)
+            # tgt_audio = codec.decode(tgt_codes).to('cpu')
+            # tgt_audio = librosa.resample(tgt_audio.numpy(), orig_sr=codec.sample_rate, target_sr=transformer.sample_rate)
 
             # Predict logits
             logits = transformer(src_codes)
@@ -40,7 +40,6 @@ def validation_loop(dataloader, codec, transformer, audio_loss_fn, code_loss_fn)
                 targets_k = targets_k.view(-1)  # Shape: [batch_size * sequence_length]
 
                 code_loss_k = code_loss_fn(logits_k, targets_k)
-                # if needed, e.g., for debug purposes, consider logging ce_k.detach() here
 
                 code_loss += code_loss_k
             code_loss /= n_codebooks
@@ -49,10 +48,11 @@ def validation_loop(dataloader, codec, transformer, audio_loss_fn, code_loss_fn)
             pred_codes = torch.argmax(codebook_index_probs, dim=-1)  # shape: (B, n_codebooks, S), just like input sequence!
 
             # Predict audio and codes
-            pred_audio = codec.decode(pred_codes).to('cpu')
-            pred_audio = librosa.resample(pred_audio.numpy(), orig_sr=codec.sample_rate, target_sr=transformer.sample_rate)
+            pred_audio = codec.decode(pred_codes)
+            # pred_audio = codec.decode(pred_codes).to('cpu')
+            # pred_audio = librosa.resample(pred_audio.numpy(), orig_sr=codec.sample_rate, target_sr=transformer.sample_rate)
 
-            (tgt_audio, pred_audio) = torch.tensor(tgt_audio).to('cuda'), torch.tensor(pred_audio).to('cuda')
+            # (tgt_audio, pred_audio) = torch.tensor(tgt_audio).to('cuda'), torch.tensor(pred_audio).to('cuda')
 
             # Compute predictions and losses
             running_audio_loss += audio_loss_fn(pred_audio, tgt_audio).item()
@@ -82,16 +82,21 @@ def validate(config_path):
     segment_dur = config['segment_dur']
     num_workers = config['num_workers']
     transformer_device = config["transformer"]['device']
+    codec_device = config["codec"]['device']
     version = config['version']
 
-    model = load_transformer(version, config)
-    optimizer = torch.optim.Adam(model.transformer.parameters(), lr=learning_rate)
+    # CODEC
+    codec = load_codec('encodec', config).to(codec_device)
 
-    version, last_epoch = resume_from_checkpoint(model, optimizer, version) if config["resume"] else ('1.0.0', 0)
+    # TRANSFORMER
+    transformer = load_transformer(version, config).to(transformer_device)
+    optimizer = torch.optim.Adam(transformer.transformer.parameters(), lr=learning_rate)
+    version, last_epoch = resume_from_checkpoint(transformer, optimizer, version) if config["resume"] else ('1.0.0', 0)
 
-    val_ds = ValidationDataset(sample_rate=model.sample_rate,
+    val_ds = ValidationDataset(codec_sr=codec.sample_rate,
+                               transformer_sr=transformer.sample_rate,
                                metadata_path=validation_metadata_path,
-                               data_per_epoch=steps_per_epoch,  # batch_size * steps_per_epoch
+                               data_per_epoch=steps_per_epoch,
                                segment_dur=segment_dur,
                                device=transformer_device)
 
@@ -102,8 +107,8 @@ def validate(config_path):
 
     for epoch in range(last_epoch, n_epochs + last_epoch):
         print(f"\nEpoch {epoch + 1}/{n_epochs}")
-        avg_audio_loss, avg_code_loss = validation_loop(epoch, val_loader, model, audio_loss_fn, code_loss_fn, transformer_device)
-        if config['save']: save(version, epoch + 1, model, optimizer, avg_audio_loss, avg_code_loss,
-                                config['epoch_to_save'])
+        avg_audio_loss, avg_code_loss = validation_loop(val_loader, codec, transformer, audio_loss_fn, code_loss_fn)
+        if config['save']:
+            save(version, epoch+1, transformer, optimizer, avg_audio_loss, avg_code_loss, config['epoch_to_save'])
 
     print("Done!")
