@@ -25,4 +25,3 @@ if __name__ == "__main__":
     except Exception as e:
         print('\n'+str(e))
         print(traceback.format_exc())
-        input("press Enter to quit")

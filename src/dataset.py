@@ -3,7 +3,6 @@ import random
 from typing import Union
 import numpy as np
 import pandas as pd
-from audiotools import AudioSignal
 from torch.utils.data import Dataset
 import tqdm
 from audiomentations import Compose, AddGaussianNoise, PolarityInversion, PitchShift, TanhDistortion, TimeStretch
@@ -13,7 +12,11 @@ from datasets import load_dataset
 import soundfile as sf
 from .utils import create_trace
 import math
+import torchaudio as ta
+from torchaudio.transforms import Resample
+import librosa
 
+# TODO: remove AudioSignal
 
 def load_from_dataset(subset: str,
                       music_dataset: str = "/nas/home/crapisarda/Medley-solo-DB",
@@ -63,20 +66,25 @@ def load_from_dataset(subset: str,
     return df
 
 
-def load_random_audio_segment(df: pd.DataFrame, sample_rate: int, segment_dur: float, device: str,
+def load_random_audio_segment(df: pd.DataFrame, codec_sr: int, tgt_sr: int, segment_dur: float,
                               p: list = [0.3, 0.3, 0.3, 0.3, 0.3], augment_bool:bool = False) -> torch.Tensor:
-    """ Load a random audio file according to probability and applies audio augmentation """
+    """
+    Load a random audio file according to probability and applies audio augmentation
+    :returns:
+    audio_data: Tensor of shape (1, segment_dur*sample_rate)
+    """
 
-    probability = random.uniform(0, 1)
-    sample = df.loc[df.type == "speech"].sample(1) if probability < 0.5 else df.loc[df["type"] == "music"].sample(1)
-    while sample.duration.values[0] < segment_dur:
-        sample = df.loc[df.type == "speech"].sample(1) if probability < 0.5 else df.loc[df["type"] == "music"].sample(1)
+    # audio_type = "speech" if torch.rand(1) > 0.5 else "music"
+    audio_type = "speech"
+    sample = df.loc[((df.type == audio_type) & (df.duration >= segment_dur))].sample()
 
-    random_offset = random.uniform(0, sample.duration.values[0] - segment_dur)
+    dur = sample["duration"].values[0]
+    path = sample["path"].values[0]
+    random_offset = random.uniform(0, dur - (segment_dur))
 
-    signal = AudioSignal(sample.path.values[0], sample_rate=sample_rate, offset=random_offset, duration=segment_dur)
-    signal = signal.to_mono()
-    audio_data = signal.audio_data
+    # Applies resample
+    # BUG: ta.load carica frammenti di lunghezza random
+    wave24kHz, sr = librosa.load(path, sr=codec_sr, offset=random_offset, duration=(segment_dur), mono=True)
 
     if augment_bool:
         augment = Compose([
@@ -86,41 +94,47 @@ def load_random_audio_segment(df: pd.DataFrame, sample_rate: int, segment_dur: f
             TanhDistortion(p=p[3]),
             TimeStretch(min_rate=1, max_rate=1.25, p=p[4]),
         ])
-        audio_data = augment(audio_data.numpy(), sample_rate=sample_rate)
+        wave24kHz = augment(wave24kHz, sample_rate=codec_sr)
 
-    audio_data = torch.Tensor(audio_data[..., :int(segment_dur * sample_rate)]).squeeze(0)
+    # wave_24kHz = librosa.resample(wave_48kHz, orig_sr=tgt_sr, target_sr=codec_sr)
 
-    return audio_data
+    # wave_48kHz = wave_48kHz[np.newaxis, :]
+    wave24kHz = wave24kHz[np.newaxis, :int((segment_dur) * codec_sr)]
+
+    return wave24kHz
 
 
-def load_random_audio_mix(df: pd.DataFrame, sample_rate: int, segment_dur: float, device: str, p1: float = 0.5,
-                          alpha: float = 2.0, mix_bool:bool = False, augment_bool:bool = False) -> torch.Tensor:
-    audio = load_random_audio_segment(df, sample_rate, segment_dur, device, augment_bool=augment_bool)
+def load_random_audio_mix(df: pd.DataFrame, codec_sr: int, tgt_sr: int, segment_dur: float,
+                          p1: float = 0.5,
+                          alpha: float = 2.0,
+                          mix_bool:bool = False,
+                          augment_bool:bool = False):
+
+    wave24kHz = load_random_audio_segment(df, codec_sr, tgt_sr, segment_dur,
+                                                           augment_bool=augment_bool)
     if mix_bool:
-        gain = np.random.beta(alpha, alpha)
-        audio2 = load_random_audio_segment(df, sample_rate, segment_dur, device, augment_bool=augment_bool)
-        min_len = min(audio.shape[-1], audio2.shape[-1])
-        audio = gain * audio[..., :min_len] + (1 - gain) * audio2[..., :min_len]
-        if random.uniform(0, 1) < p1:
+        for _ in range(2):
             gain = np.random.beta(alpha, alpha)
-            audio3 = load_random_audio_segment(df, sample_rate, segment_dur, device, augment_bool=augment_bool)
-            min_len = min(audio.shape[-1], audio2.shape[-1])
-            audio = gain * audio[..., :min_len] + (1 - gain) * audio3[..., :min_len]
-    return audio
+            signal_24kHz_ = load_random_audio_segment(df, codec_sr, tgt_sr, segment_dur,
+                                                                     augment_bool=augment_bool)
+            wave24kHz = gain * wave24kHz + (1 - gain) * signal_24kHz_
+
+    return wave24kHz
 
 
 class TrainingDataset(Dataset):
     def __init__(self, *,
-                 sample_rate: int,
+                 codec_sr: int,
+                 transformer_sr: int,
                  metadata_path: str,
                  data_per_epoch: int,
                  segment_dur: float,
                  device: str,
                  ):
-        self.sample_rate = sample_rate
+        self.codec_sr = codec_sr
+        self.transformer_sr = transformer_sr
         self.data_per_epoch = data_per_epoch
         self.segment_dur = segment_dur
-        self.device = device
         self.metadata_path = metadata_path
         self.metadata = self.load_dataframe()
 
@@ -140,23 +154,28 @@ class TrainingDataset(Dataset):
 
     @torch.no_grad()
     def __getitem__(self, index) -> torch.Tensor:
-        return load_random_audio_mix(self.metadata, self.sample_rate, self.segment_dur, self.device, mix_bool=True, augment_bool=True)
+        """
+        :param index:
+        :return: wave_48kHz, wave_24kHz
+        """
+        return load_random_audio_mix(self.metadata, self.codec_sr, self.transformer_sr, self.segment_dur, mix_bool=True, augment_bool=True)
 
 
 class ValidationDataset(Dataset):
     def __init__(self, *,
-                 sample_rate: int,
+                 codec_sr: int,
+                 transformer_sr: int,
                  metadata_path: str,
                  segment_dur: float,
                  data_per_epoch: int,
                  device: str
                  ):
-        self.sample_rate = sample_rate
+        self.codec_sr = codec_sr
+        self.transformer_sr = transformer_sr
         self.segment_dur = segment_dur
         self.metadata_path = metadata_path
         self.metadata = self.load_dataframe()
         self.data_per_epoch = data_per_epoch
-        self.device = device
 
     def __len__(self):
         return self.data_per_epoch
@@ -176,17 +195,18 @@ class ValidationDataset(Dataset):
 
     @torch.no_grad()
     def __getitem__(self, index):
-        return load_random_audio_mix(self.metadata, self.sample_rate, self.segment_dur, self.device,
-                                     mix_bool=True, augment_bool=True)
+        return load_random_audio_mix(self.metadata, self.codec_sr, self.transformer_sr, self.segment_dur, mix_bool=True, augment_bool=True)
 
 class TestDataset(torch.utils.data.Dataset):
     def __init__(self, *,
+                 codec_sr: int,
                  metadata_path: str,
                  data_per_epoch: int,
                  segment_dur: float,
                  sample_rate: int = 44100,
                  packet_dim: int=512,
-                 random_trace: bool=False):
+                 random_trace: bool=True):
+        self.codec_sr = codec_sr
         self.sample_rate = sample_rate
         self.segment_dur = segment_dur
         self.sample_rate = sample_rate
@@ -220,8 +240,9 @@ class TestDataset(torch.utils.data.Dataset):
     @torch.no_grad()
     def __getitem__(self, index):
         sample = self.metadata.loc[index]
-        audio_data = AudioSignal(sample.path).audio_data
+        wave_24kHz, sr = librosa.load(sample.path, sr=self.codec_sr)
 
+        # Parse PLC Challenge Traces
         if 'trace' in self.metadata.columns:
             trace = sample.trace.split()
             num_packets = math.ceil(audio_data.shape[-1] // self.packet_dim)
@@ -231,9 +252,10 @@ class TestDataset(torch.utils.data.Dataset):
             assert(len(trace) == num_packets)
             trace = np.array([int(i) for i in trace])
 
+        # Ore create new trace
         else:
             trace = create_trace(sample.path, random_trace=self.random_trace)
 
         # return sample.path
-        return (sample.path, audio_data, trace)
+        return wave_24kHz, trace
 

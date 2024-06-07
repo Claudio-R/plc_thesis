@@ -1,43 +1,34 @@
-import os
 import yaml
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import torch.nn.functional as F
-import numpy as np
-import pandas as pd
-import soundfile as sf
-from scipy.spatial import distance
-from scipy.io import wavfile
 
-from .v1.PLCModel import PLCModel as PLCModel_v1
-from .v2.PLCModel import PLCModel as PLCModel_v2
 from .validation import validation_loop
 from .testing import test_loop
 from .dataset import TrainingDataset, ValidationDataset
-from .utils import resume_from_checkpoint, save, load_model
+from .utils import resume_from_checkpoint, save, load_codec, load_transformer
 
-
-def training_loop(epoch, dataloader, model, code_loss_fn, optimizer, device, version='1.0.0'):
-    model.train()
-
+def training_loop(dataloader, codec, transformer, code_loss_fn, optimizer):
+    transformer.train()
     running_code_loss = 0.0
 
     progress_bar = tqdm(dataloader, desc='- Training')
-    for step, audio_data in enumerate(progress_bar):
+    for step, wave24kHz in enumerate(progress_bar):
+        # (B, 1, T), (B, 1, T/2)
 
-        # Encode audio_data
-        codes = model.encode(audio_data)
+        wave24kHz = wave24kHz.to(codec.device)
 
+        # Encode audio_data: 24000 samples --> 75 packets: 1 packet --> 13 ms
+        codes = codec.encode(wave24kHz) #(64, 8, 150)
         src_codes = codes[..., :-1]
         tgt_codes = codes[..., 1:]
 
-        # Predict logits
-        logits = model(src_codes)
+        # Call transformer
+        logits = transformer(src_codes)
         batch_size, n_codebooks, sequence_length, codebook_size = logits.shape
 
-        code_loss = 0.0  # inizializza la tua (average) cross-entropy (ce) loss
-
+        # Compute loss
+        code_loss = 0.0
         for k in range(n_codebooks):
             # Extract logits and targets for the current codebook
             logits_k = logits[:, k, :, :].contiguous()  # Shape: [batch_size, sequence_length, codebook_size]
@@ -47,13 +38,11 @@ def training_loop(epoch, dataloader, model, code_loss_fn, optimizer, device, ver
             targets_k = targets_k.view(-1)  # Shape: [batch_size * sequence_length]
 
             code_loss_k = code_loss_fn(logits_k, targets_k)
-            # if needed, e.g., for debug purposes, consider logging ce_k.detach() here
-
             code_loss += code_loss_k
 
         code_loss /= n_codebooks
 
-        # Backpropagate
+        # Backpropagation
         code_loss.backward()
         optimizer.step()
         optimizer.zero_grad()
@@ -67,7 +56,6 @@ def training_loop(epoch, dataloader, model, code_loss_fn, optimizer, device, ver
             'code_loss': '{0:.5g}'.format(code_loss),
             'avg_code_loss': '{0:.5g}'.format(running_code_loss / (step + 1))
         })
-
 
 def train(config_path):
     print('Training...')
@@ -85,22 +73,28 @@ def train(config_path):
     num_workers = config['num_workers']
     pin_memory = config['pin_memory']
     transformer_device = config["transformer"]['device']
-    dac_device = config["dac"]['device']
+    codec_device = config["codec"]['device']
     version = config['version']
 
-    model = load_model(version, config)
-    optimizer = torch.optim.Adam(model.transformer.parameters(), lr=learning_rate)
+    # CODEC
+    codec = load_codec('encodec', config).to(codec_device)
 
-    version, last_epoch = resume_from_checkpoint(model, optimizer, version) if config["resume"] else (version, 0)
+    # TRANSFORMER
+    transformer = load_transformer(version, config).to(transformer_device)
+
+    optimizer = torch.optim.Adam(transformer.parameters(), lr=learning_rate)
+    version, last_epoch = resume_from_checkpoint(transformer, optimizer, version) if config["resume"] else (version, 0)
     epochs = range(last_epoch, n_epochs+last_epoch)
 
-    train_ds = TrainingDataset(sample_rate=model.sample_rate,
+    train_ds = TrainingDataset(codec_sr=codec.sample_rate,
+                               transformer_sr=transformer.sample_rate,
                                metadata_path=training_metadata_path,
                                data_per_epoch=batch_size*steps_per_epoch,
                                segment_dur=segment_dur,
                                device=transformer_device)
 
-    val_ds = ValidationDataset(sample_rate=model.sample_rate,
+    val_ds = ValidationDataset(codec_sr=codec.sample_rate,
+                               transformer_sr=transformer.sample_rate,
                                metadata_path=validation_metadata_path,
                                data_per_epoch=steps_per_epoch,
                                segment_dur=segment_dur,
@@ -114,8 +108,8 @@ def train(config_path):
 
     for epoch in epochs:
         print(f"\nEpoch {epoch+1}/{epochs[-1]+1}")
-        training_loop(epoch, train_loader, model, code_loss_fn, optimizer, transformer_device)
-        avg_audio_loss, avg_code_loss = validation_loop(epoch, val_loader, model, audio_loss_fn, code_loss_fn, transformer_device)
-        if config['save']: save(version, epoch+1, model, optimizer, avg_audio_loss, avg_code_loss, config['epoch_to_save'])
+        training_loop(train_loader, codec, transformer, code_loss_fn, optimizer)
+        avg_audio_loss, avg_code_loss = validation_loop(val_loader, codec, transformer, audio_loss_fn, code_loss_fn)
+        if config['save']: save(version, epoch+1, transformer, optimizer, avg_audio_loss, avg_code_loss, config['epoch_to_save'])
 
     print("Done!")

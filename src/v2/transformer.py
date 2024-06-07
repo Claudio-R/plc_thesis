@@ -153,7 +153,6 @@ class MultiHeadAttentionBlock(nn.Module):
         x, __ = self.attention(query, key, value, mask)
 
         # Combine all the heads together: (B, h, T, d_h) --> (B, T, h, d_h) --> (B, T, D)
-        # x = x.transpose(1, 2).contiguous().view(x.size(0), -1, self.n_heads * self.d_h)
         x = x.transpose(-3, -2)
         x = x.contiguous()
         x = x.view(*x.shape[:-2], self.n_heads * self.d_h)
@@ -217,30 +216,23 @@ class TransformerDecoder(nn.Module):
 
 class Transformer(nn.Module):
     """ Transformer model """
-    def __init__(
-            self,
-            n_codebooks: int = 9,
-            codebook_size: int = 1024,
-            d_model: int = 512,
-            d_attn: Optional[int] = None,
-            n_heads: int = 8,
-            n_layers: int = 6,
-            dropout: float = 0.1,
-            dropout_attn: float = 0.0,
-            input_length: int = 1024
-    ):
+    def __init__(self, config):
         super().__init__()
-        self.n_codebooks = n_codebooks
-        self.codebook_size = codebook_size
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.n_layers = n_layers
-        self.dropout = dropout
-        self.input_length = input_length
+        self.sample_rate = config["sample_rate"]
+        self.context_length = self.sample_rate * config["segment_dur"]
+        self.n_codebooks = config["codec"]["n_codebooks"]
+        self.codebook_size = config["codec"]["codebook_size"]
+        self.d_model = config["transformer"]["d_model"]
+        self.d_attn = config["transformer"]["d_attn"]
+        self.n_heads = config["transformer"]["n_heads"]
+        self.n_layers = config["transformer"]["n_layers"]
+        self.dropout = config["transformer"]["dropout"]
+        self.dropout_attn = config["transformer"]["dropout_attn"]
+        self.device = config["transformer"]["device"]
 
-        self.input_embeddings = InputEmbeddings(n_codebooks, codebook_size, d_model)
-        self.decoder = TransformerDecoder(n_layers, d_model, d_attn, n_heads, dropout, dropout_attn)
-        self.output_projection = OutputProjections(n_codebooks, codebook_size, d_model) # (512, 1024) = 11.6 ms predetti per packet
+        self.input_embeddings = InputEmbeddings(self.n_codebooks, self.codebook_size, self.d_model)
+        self.decoder = TransformerDecoder(self.n_layers, self.d_model, self.d_attn, self.n_heads, self.dropout, self.dropout_attn)
+        self.output_projection = OutputProjections(self.n_codebooks, self.codebook_size, self.d_model) # (512, 1024) = 11.6 ms predetti per packet
 
     def forward(self, x):
         """ codes: (B, N, T) --> codes: (B, N, T) """
@@ -248,3 +240,9 @@ class Transformer(nn.Module):
         x = self.decoder(x)  # (B, T, D) --> (B, T, D)
         x = self.output_projection(x)  # (B, T, D) --> (B, N, T, C)
         return x
+
+    def predict(self, x):
+        logits = self.forward(x)
+        codebook_index_probs = torch.nn.functional.softmax(logits, dim=-1)  # shape: (B, n_codebooks, S, C)
+        pred_codes = torch.argmax(codebook_index_probs, dim=-1)
+        return pred_codes

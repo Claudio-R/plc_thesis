@@ -6,9 +6,9 @@ import torch
 import pandas as pd
 import random
 import math
-
-from .v1 import PLCModel_v1
-from .v2 import PLCModel_v2
+import src.v1
+import src.v2
+from .encodec24kHz import EnCodec24kHz
 
 def resume_from_checkpoint(model, optimizer, current_version:str, map_location:str='cuda:1'):
 
@@ -57,14 +57,18 @@ def resume_from_checkpoint(model, optimizer, current_version:str, map_location:s
 
     return version, epoch
 
-def load_model(version, config):
+def load_codec(codec_name:str='encodec', config=None):
+    if codec_name == 'encodec':
+        return EnCodec24kHz()
+    else:
+        raise ValueError(f'Please provide a valid codec: {codec_name}')
+
+def load_transformer(version, config):
     version_id = version.split('.')[0]
     if version_id == '1':
-        model = PLCModel_v1(config)
+        return src.v1.Transformer()
     else:
-        model = PLCModel_v2(config)
-    return model
-
+        return src.v2.Transformer(config)
 def save(version, epoch, model, optimizer, avg_audio_loss, avg_code_loss, epoch_to_save):
 
     version_id = version.split('.')[0]

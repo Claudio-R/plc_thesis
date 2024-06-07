@@ -2,33 +2,34 @@ import yaml
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import librosa
 
-from .v1 import PLCModel_v1
-from .v2 import PLCModel_v2
 from .dataset import ValidationDataset
-from .utils import resume_from_checkpoint, load_model, save
+from .utils import resume_from_checkpoint, load_transformer, save
 
-def validation_loop(epoch, dataloader, model, audio_loss_fn, code_loss_fn, device, version='1.0.0'):
-    model.eval()
+def validation_loop(dataloader, codec, transformer, audio_loss_fn, code_loss_fn):
+    transformer.eval()
     running_audio_loss, running_code_loss = (0.0, 0.0)
 
     progress_bar = tqdm(dataloader, desc='- Validation')
     with torch.no_grad():
-        for step, audio_data in enumerate(progress_bar):
+        for step, wave24kHz in enumerate(progress_bar):
+
+            wave24kHz = wave24kHz.to(codec.device)
 
             # Encode and decode audio_data
-            codes = model.encode(audio_data)
-            tgt_audio = model.decode(codes[..., 1:]).to(device)
+            codes = codec.encode(wave24kHz)
+            src_codes = codes[..., :-1]
+            tgt_codes = codes[..., 1:]
 
-            # Get src_codes and tgt_codes
-            src_codes = codes[..., :-1].to(device)
-            tgt_codes = codes[..., 1:].to(device)
+            tgt_audio = codec.decode(tgt_codes).to('cpu')
+            tgt_audio = librosa.resample(tgt_audio.numpy(), orig_sr=codec.sample_rate, target_sr=transformer.sample_rate)
 
             # Predict logits
-            logits = model(src_codes)
+            logits = transformer(src_codes)
             batch_size, n_codebooks, sequence_length, codebook_size = logits.shape
 
-            code_loss = 0.0  # inizializza la tua (average) cross-entropy (ce) loss
+            code_loss = 0.0
 
             for k in range(n_codebooks):
                 # Extract logits and targets for the current codebook
@@ -48,8 +49,10 @@ def validation_loop(epoch, dataloader, model, audio_loss_fn, code_loss_fn, devic
             pred_codes = torch.argmax(codebook_index_probs, dim=-1)  # shape: (B, n_codebooks, S), just like input sequence!
 
             # Predict audio and codes
-            pred_audio = model.decode(pred_codes)
-            (pred_codes, pred_audio) = pred_codes.to(device), pred_audio.to(device)
+            pred_audio = codec.decode(pred_codes).to('cpu')
+            pred_audio = librosa.resample(pred_audio.numpy(), orig_sr=codec.sample_rate, target_sr=transformer.sample_rate)
+
+            (tgt_audio, pred_audio) = torch.tensor(tgt_audio).to('cuda'), torch.tensor(pred_audio).to('cuda')
 
             # Compute predictions and losses
             running_audio_loss += audio_loss_fn(pred_audio, tgt_audio).item()
@@ -81,7 +84,7 @@ def validate(config_path):
     transformer_device = config["transformer"]['device']
     version = config['version']
 
-    model = load_model(version, config)
+    model = load_transformer(version, config)
     optimizer = torch.optim.Adam(model.transformer.parameters(), lr=learning_rate)
 
     version, last_epoch = resume_from_checkpoint(model, optimizer, version) if config["resume"] else ('1.0.0', 0)

@@ -1,17 +1,16 @@
 import os
+
+import librosa
 import yaml
 import torch
 from torch.utils.data import DataLoader
 import soundfile as sf
 from tqdm import tqdm
 
-from .v1 import PLCModel_v1
-from .v2 import PLCModel_v2
-from .utils import create_trace, simulate_packet_loss, load_model, resume_from_checkpoint
+from .utils import simulate_packet_loss, load_transformer, load_codec, resume_from_checkpoint
 from .dataset import TestDataset
 
-
-def test_loop(tests_dir, test_ID, dataloader, model, version, sr=44100):
+def test_loop(tests_dir, test_ID, dataloader, codec, transformer, version, sr=44100):
     
     # Create folders
     test_dir = f'{tests_dir}/t{test_ID}'
@@ -27,31 +26,41 @@ def test_loop(tests_dir, test_ID, dataloader, model, version, sr=44100):
     os.makedirs(traces_dir, exist_ok=True)
 
     # Start testing
-    model.eval()
-    with torch.no_grad():
-        for Track_ID, (audio_test_path, audio_data, trace) in enumerate(tqdm(dataloader, desc='- Testing')):
-            audio_test_path = audio_test_path[0]
-            audio_data = audio_data[0]
-            trace = trace[0].to('cpu').numpy()
+    transformer.eval()
 
-            # Generate target signals
-            codes = model.encode(audio_data)
-            tgt_audio = model.decode(codes)
-            tgt_audio_lost = simulate_packet_loss(tgt_audio, trace)
+    with torch.no_grad():
+        for Track_ID, (wave24kHz, trace) in enumerate(tqdm(dataloader, desc='- Testing')):
+
+            wave24kHz = wave24kHz.to(codec.device)
+
+            # Encode and decode audio_data
+            codes = codec.encode(wave24kHz)
+            tgt_wave24kHz = codec.decode(codes)
+
+            # Simulate_packet_loss
+            tgt_wave24kHz_lost = simulate_packet_loss(tgt_wave24kHz, trace, packet_dim=codec.frame_dim)
 
             # Inference
-            model_audio_pred = model.inference(tgt_audio, tgt_audio_lost, trace)
+            codes_lost = codec.encode(tgt_wave24kHz_lost)
+            for i, loss in enumerate(trace):
+                if loss:
+                    src_codes = codes_lost[..., :i]
+                    logits = transformer(src_codes)
+                    codebook_index_probs = torch.nn.functional.softmax(logits, dim=-1)
+                    pred_codes = torch.argmax(codebook_index_probs, dim=-1)
+                    codes_lost[..., i] = pred_codes[..., -1]
+
+            pred_wave24kHz = codec.decode(codes_lost)
 
             # Save audio files
-            sf.write(f'{clean_dir}/tgt_audio_{Track_ID}.wav', tgt_audio.squeeze().to('cpu'), sr)
-            sf.write(f'{lossy_dir}/tgt_audio_{Track_ID}.wav', tgt_audio_lost.squeeze().to('cpu'), sr)
-            sf.write(f'{enhanced_dir}/tgt_audio_{Track_ID}.wav', model_audio_pred.squeeze().to('cpu'), sr)
+            sf.write(f'{clean_dir}/tgt_audio_{Track_ID}.wav', tgt_wave24kHz.squeeze().to('cpu'), sr)
+            sf.write(f'{lossy_dir}/tgt_audio_{Track_ID}.wav', tgt_wave24kHz_lost.squeeze(), sr)
+            sf.write(f'{enhanced_dir}/tgt_audio_{Track_ID}.wav', pred_wave24kHz.squeeze().to('cpu'), sr)
             
             # Save traces
             with open(f'{traces_dir}/tgt_audio_{Track_ID}.txt', 'w') as f:
                 for trace_idx in trace:
                     f.write('{}\n'.format(trace_idx))
-
 
 def test(config_path, resume=True):
     
@@ -66,15 +75,22 @@ def test(config_path, resume=True):
     num_workers = config['num_workers']
     tests_dir = config['tests_dir']
     version = config['version']
+    transformer_device = config["transformer"]['device']
+    codec_device = config["codec"]['device']
 
-    model = load_model(version, config)
-    version, _ = resume_from_checkpoint(model, None, version) if resume else (version, 0)
+    # CODEC
+    codec = load_codec('encodec', config).to(codec_device)
 
-    test_ds = TestDataset(sample_rate=model.sample_rate,
+    # TRANSFORMER
+    transformer = load_transformer(version, config).to(transformer_device)
+
+    version, _ = resume_from_checkpoint(transformer, None, version) if resume else (version, 0)
+
+    test_ds = TestDataset(codec_sr=codec.sample_rate,
                           metadata_path=test_metadata_path,
                           data_per_epoch=steps_per_epoch,
                           segment_dur=segment_dur)
 
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=num_workers)
     
-    test_loop(tests_dir, 2, test_loader, model, version)
+    test_loop(tests_dir, 2, test_loader, codec, transformer, version)
