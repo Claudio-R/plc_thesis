@@ -1,14 +1,12 @@
 import os
 import numpy as np
 from copy import deepcopy
-import librosa
 import torch
 import pandas as pd
 import random
 import math
-import src.v1
-import src.v2
-from .encodec24kHz import EnCodec24kHz
+import src.transformers
+import src.codecs
 
 def resume_from_checkpoint(model, optimizer, current_version:str, map_location:str='cuda:1'):
 
@@ -59,16 +57,21 @@ def resume_from_checkpoint(model, optimizer, current_version:str, map_location:s
 
 def load_codec(codec_name:str='encodec', config=None):
     if codec_name == 'encodec':
-        return EnCodec24kHz()
+        return src.codecs.EnCodec24kHz()
     else:
-        raise ValueError(f'Please provide a valid codec: {codec_name}')
+        raise ValueError(f'Please provide a valid codec: [{codec_name}]')
 
 def load_transformer(version, config):
     version_id = version.split('.')[0]
     if version_id == '1':
-        return src.v1.Transformer()
+        return src.transformers.TransformerV1()
+    elif version_id == '2':
+        return src.transformers.TransformerV2(config)
+    elif version_id == '3':
+        return src.transformers.TransformerV3(config)
     else:
-        return src.v2.Transformer(config)
+        raise ValueError(f'Invalid version. Exiting.')
+
 def save(version, epoch, model, optimizer, avg_audio_loss, avg_code_loss, epoch_to_save):
 
     version_id = version.split('.')[0]
@@ -110,40 +113,35 @@ def save(version, epoch, model, optimizer, avg_audio_loss, avg_code_loss, epoch_
     hdl.to_csv(pth_bestLoss, index=False)
 
 
-def create_trace(audio_test_path, packet_dim:int=512, sr:int=44100, loss_rate: int=10, random_trace:bool = False):
+def create_trace(y_ref, frame_dim, loss_rate: int=10, random_trace:bool = False, loss_prob:float=0.5):
     """
     Create a trace
-    :param audio_test_path:
-    :param packet_dim:
-    :param sr:
+    :param y_ref: audio data sampled at codec sample rate
+    :param frame_dim: encoded frame size
     :param loss_rate:
     :param random_trace: whether to randomly sample the loss
     :return: Numpy array
     """
 
-    # load the clean signal
-    y_true, sr = librosa.load(audio_test_path, sr=sr, mono=True)
-
     # ----------- Simulate packet losses ----------- #
     # Define the trace of lost packets: 1s indicate a loss
-    trace_len = math.ceil(len(y_true) // packet_dim)
+    trace_len = math.ceil(len(y_ref) // frame_dim)
     trace = np.zeros(trace_len, dtype=int)
     if not random_trace:
         trace[np.arange(loss_rate, trace_len, loss_rate)] = 1
     else:
         for idx in range(1, trace_len):
-            prob = 0.3
-            trace[idx] = 0 if random.uniform(0, 1) > prob else 1
+            trace[idx] = 0 if random.uniform(0, 1) > loss_prob else 1
     return trace
 
 
-def simulate_packet_loss(y_ref: np.ndarray, trace: np.ndarray, packet_dim: int=512) -> np.ndarray:
+def simulate_packet_loss(y_ref: np.ndarray, trace: np.ndarray, packet_dim:int) -> np.ndarray:
     # Copy the clean signal to create the lossy signal
     y_lost = deepcopy(y_ref)
 
     # Simulate packet losses according to given trace
-    for i, loss in enumerate(trace):
-        if loss:
+    for i, is_lost in enumerate(trace):
+        if is_lost:
             idx = i * packet_dim
             y_lost[..., idx: idx + packet_dim] = 0.
 

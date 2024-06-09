@@ -66,7 +66,7 @@ def load_from_dataset(subset: str,
     return df
 
 
-def load_random_audio_segment(df: pd.DataFrame, codec_sr: int, tgt_sr: int, segment_dur: float,
+def load_random_audio_segment(df: pd.DataFrame, codec_sr: int, segment_dur: float,
                               p: list = [0.3, 0.3, 0.3, 0.3, 0.3], augment_bool:bool = False) -> torch.Tensor:
     """
     Load a random audio file according to probability and applies audio augmentation
@@ -96,27 +96,21 @@ def load_random_audio_segment(df: pd.DataFrame, codec_sr: int, tgt_sr: int, segm
         ])
         wave24kHz = augment(wave24kHz, sample_rate=codec_sr)
 
-    # wave_24kHz = librosa.resample(wave_48kHz, orig_sr=tgt_sr, target_sr=codec_sr)
-
-    # wave_48kHz = wave_48kHz[np.newaxis, :]
     wave24kHz = wave24kHz[np.newaxis, :int((segment_dur) * codec_sr)]
 
     return wave24kHz
 
 
-def load_random_audio_mix(df: pd.DataFrame, codec_sr: int, tgt_sr: int, segment_dur: float,
-                          p1: float = 0.5,
+def load_random_audio_mix(df: pd.DataFrame, codec_sr: int, segment_dur: float,
                           alpha: float = 2.0,
                           mix_bool:bool = False,
                           augment_bool:bool = False):
 
-    wave24kHz = load_random_audio_segment(df, codec_sr, tgt_sr, segment_dur,
-                                                           augment_bool=augment_bool)
+    wave24kHz = load_random_audio_segment(df, codec_sr, segment_dur, augment_bool=augment_bool)
     if mix_bool:
         for _ in range(2):
             gain = np.random.beta(alpha, alpha)
-            signal_24kHz_ = load_random_audio_segment(df, codec_sr, tgt_sr, segment_dur,
-                                                                     augment_bool=augment_bool)
+            signal_24kHz_ = load_random_audio_segment(df, codec_sr, segment_dur, augment_bool=augment_bool)
             wave24kHz = gain * wave24kHz + (1 - gain) * signal_24kHz_
 
     return wave24kHz
@@ -125,28 +119,25 @@ def load_random_audio_mix(df: pd.DataFrame, codec_sr: int, tgt_sr: int, segment_
 class TrainingDataset(Dataset):
     def __init__(self, *,
                  codec_sr: int,
-                 transformer_sr: int,
                  metadata_path: str,
                  data_per_epoch: int,
-                 segment_dur: float,
-                 device: str,
+                 segment_dur: float
                  ):
         self.codec_sr = codec_sr
-        self.transformer_sr = transformer_sr
         self.data_per_epoch = data_per_epoch
         self.segment_dur = segment_dur
-        self.metadata_path = metadata_path
-        self.metadata = self.load_dataframe()
+        self.metadata = self.load_dataframe(metadata_path)
 
-    def load_dataframe(self) -> pd.DataFrame:
+    def load_dataframe(self, metadata_path) -> pd.DataFrame:
+        with open(metadata_path, 'rb') as handle:
+            print(f'Loading data from cache: {metadata_path}.')
+            df = pd.read_csv(handle)
         try:
-            with open(self.metadata_path, 'rb') as handle:
-                print(f'Loading data from cache: {self.metadata_path}.')
-                df = pd.read_csv(handle)
+            pass
         except:
-            print(f'Cannot locate caches at {self.metadata_path}. Collecting data...')
+            print(f'Cannot locate caches at {metadata_path}. Collecting data...')
             df = load_from_dataset(subset='training')
-            df.to_csv(self.metadata_path, index=False)
+            df.to_csv(metadata_path, index=False)
         return df
 
     def __len__(self):
@@ -158,71 +149,61 @@ class TrainingDataset(Dataset):
         :param index:
         :return: wave_48kHz, wave_24kHz
         """
-        return load_random_audio_mix(self.metadata, self.codec_sr, self.transformer_sr, self.segment_dur, mix_bool=True, augment_bool=True)
+        return load_random_audio_mix(self.metadata, self.codec_sr, self.segment_dur, mix_bool=True, augment_bool=True)
 
 
 class ValidationDataset(Dataset):
     def __init__(self, *,
                  codec_sr: int,
-                 transformer_sr: int,
                  metadata_path: str,
-                 segment_dur: float,
                  data_per_epoch: int,
-                 device: str
+                 segment_dur: float,
                  ):
         self.codec_sr = codec_sr
-        self.transformer_sr = transformer_sr
         self.segment_dur = segment_dur
-        self.metadata_path = metadata_path
-        self.metadata = self.load_dataframe()
         self.data_per_epoch = data_per_epoch
+        self.metadata = self.load_dataframe(metadata_path)
 
     def __len__(self):
         return self.data_per_epoch
 
-    def load_dataframe(self) -> pd.DataFrame:
+    def load_dataframe(self, metadata_path) -> pd.DataFrame:
         try:
-            with open(self.metadata_path, 'rb') as handle:
-                print(f'Loading data from cache: {self.metadata_path}.')
+            with open(metadata_path, 'rb') as handle:
+                print(f'Loading data from cache: {metadata_path}.')
                 df = pd.read_csv(handle)
 
         except:
-            print(f'Cannot locate caches at {self.metadata_path}. Collecting data...')
+            print(f'Cannot locate caches at {metadata_path}. Collecting data...')
             df = load_from_dataset(subset='validation')
-            df.to_csv(self.metadata_path, index=False)
+            df.to_csv(metadata_path, index=False)
 
         return df
 
     @torch.no_grad()
     def __getitem__(self, index):
-        return load_random_audio_mix(self.metadata, self.codec_sr, self.transformer_sr, self.segment_dur, mix_bool=True, augment_bool=True)
+        return load_random_audio_mix(self.metadata, self.codec_sr, self.segment_dur, mix_bool=True, augment_bool=True)
 
 class TestDataset(torch.utils.data.Dataset):
     def __init__(self, *,
                  codec_sr: int,
                  metadata_path: str,
-                 data_per_epoch: int,
                  segment_dur: float,
-                 sample_rate: int = 44100,
-                 packet_dim: int=512,
-                 random_trace: bool=True):
+                 frame_dim: int,
+                 use_random_trace:bool = False):
         self.codec_sr = codec_sr
-        self.sample_rate = sample_rate
         self.segment_dur = segment_dur
-        self.sample_rate = sample_rate
-        self.metadata_path = metadata_path
-        self.metadata = self.load_dataframe()
-        self.num_samples = self.metadata.shape[0]
-        self.random_trace = random_trace
-        self.packet_dim = packet_dim
+        self.metadata = self.load_dataframe(metadata_path)
+        self.frame_dim = frame_dim
+        self.use_random_trace = use_random_trace
 
-    def load_dataframe(self) -> pd.DataFrame:
+    def load_dataframe(self, metadata_path) -> pd.DataFrame:
         try:
-            with open(self.metadata_path, 'rb') as handle:
-                print(f'Loading data from cache: {self.metadata_path}.')
+            with open(metadata_path, 'rb') as handle:
+                print(f'Loading data from cache: {metadata_path}.')
                 df = pd.read_csv(handle)
         except Exception as e:
-            print(f'Cannot locate caches at {self.metadata_path}. Collecting data...')
+            print(f'Cannot locate caches at {metadata_path}. Collecting data...')
             print(e)
             df = load_from_dataset(subset='test')
             filtered_speech = df[df['type'] == 'speech'].sample(n=10, random_state=42)
@@ -235,27 +216,26 @@ class TestDataset(torch.utils.data.Dataset):
         return df
 
     def __len__(self):
-        return self.num_samples
+        return self.metadata.shape[0]
 
     @torch.no_grad()
     def __getitem__(self, index):
         sample = self.metadata.loc[index]
-        wave_24kHz, sr = librosa.load(sample.path, sr=self.codec_sr)
+        wave_24kHz, sr = librosa.load(sample.path, sr=self.codec_sr, mono=True)
 
-        # Parse PLC Challenge Traces
+        # Adapt PLC Challenge traces to new samplerate
         if 'trace' in self.metadata.columns:
             trace = sample.trace.split()
-            num_packets = math.ceil(audio_data.shape[-1] // self.packet_dim)
+            num_packets = math.ceil(wave_24kHz.shape[-1] // self.frame_dim)
             pad_length = num_packets - len(trace)
             for i in range(pad_length):
                 trace.append(trace[i])
             assert(len(trace) == num_packets)
             trace = np.array([int(i) for i in trace])
 
-        # Ore create new trace
+        # Or create new traces
         else:
-            trace = create_trace(sample.path, random_trace=self.random_trace)
+            trace = create_trace(wave_24kHz, self.frame_dim, random_trace=self.use_random_trace)
 
-        # return sample.path
         return wave_24kHz, trace
 

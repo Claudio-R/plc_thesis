@@ -1,6 +1,4 @@
 import os
-
-import librosa
 import yaml
 import torch
 from torch.utils.data import DataLoader
@@ -11,7 +9,17 @@ from .utils import simulate_packet_loss, load_transformer, load_codec, resume_fr
 from .dataset import TestDataset
 
 def test_loop(tests_dir, test_ID, dataloader, codec, transformer, version, sr=44100):
-    
+    """
+    Simulate the transmission and reconstruction of lossy audio
+    :param tests_dir:
+    :param test_ID: 1: default traces, 2: plc_challenge, 3: random traces
+    :param dataloader:
+    :param codec:
+    :param transformer:
+    :param version:
+    :param sr: write sample rate
+    :return:
+    """
     # Create folders
     test_dir = f'{tests_dir}/t{test_ID}'
     clean_dir = f'{test_dir}/clean'
@@ -31,7 +39,7 @@ def test_loop(tests_dir, test_ID, dataloader, codec, transformer, version, sr=44
     with torch.no_grad():
         for Track_ID, (wave24kHz, trace) in enumerate(tqdm(dataloader, desc='- Testing')):
 
-            wave24kHz = wave24kHz.to(codec.device)
+            wave24kHz = wave24kHz.to(transformer.device)
 
             # Encode and decode audio_data
             codes = codec.encode(wave24kHz)
@@ -40,13 +48,12 @@ def test_loop(tests_dir, test_ID, dataloader, codec, transformer, version, sr=44
             # Simulate_packet_loss
             tgt_wave24kHz_lost = simulate_packet_loss(tgt_wave24kHz, trace, packet_dim=codec.frame_dim)
 
-
             # Inference
             codes_lost = codec.encode(tgt_wave24kHz_lost)
-            sequence_length = int(transformer.context_length / codec.frame_dim)
+            max_sequence_length = int(transformer.context_length / codec.frame_dim)
             for i, loss in enumerate(trace):
                 if loss:
-                    first_idx = max(0, i - sequence_length)
+                    first_idx = max(0, i - max_sequence_length)
                     src_codes = codes_lost[..., first_idx:i]
                     logits = transformer(src_codes)
                     codebook_index_probs = torch.nn.functional.softmax(logits, dim=-1)
@@ -72,28 +79,30 @@ def test(config_path, resume=True):
     with open(config_path) as handle:
         config = yaml.load(handle, Loader=yaml.FullLoader)
 
-    steps_per_epoch = config['steps_per_epoch']
-    test_metadata_path = config['plc_challenge_path']
-    segment_dur = config['segment_dur']
-    num_workers = config['num_workers']
-    tests_dir = config['tests_dir']
     version = config['version']
-    transformer_device = config["transformer"]['device']
-    codec_device = config["codec"]['device']
+    segment_dur = config['segment_dur']
+    device = config['device']
+    frame_dim = config["frame_dim"]
+
+    num_workers = config['num_workers']
+
+    test_metadata_path = config['plc_challenge_path']
+    tests_dir = config['tests_dir']
 
     # CODEC
-    codec = load_codec('encodec', config).to(codec_device)
+    codec = load_codec('encodec', config).to(device)
 
     # TRANSFORMER
-    transformer = load_transformer(version, config).to(transformer_device)
+    transformer = load_transformer(version, config).to(device)
+    version, _ = resume_from_checkpoint(transformer, None, version, device) if resume else (version, 0)
 
-    version, _ = resume_from_checkpoint(transformer, None, version) if resume else (version, 0)
-
+    # DATALOADER
     test_ds = TestDataset(codec_sr=codec.sample_rate,
                           metadata_path=test_metadata_path,
-                          data_per_epoch=steps_per_epoch,
-                          segment_dur=segment_dur)
+                          segment_dur=segment_dur,
+                          frame_dim=frame_dim)
 
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=num_workers)
-    
+
+    # TEST LOOP
     test_loop(tests_dir, 2, test_loader, codec, transformer, version)

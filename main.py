@@ -8,7 +8,6 @@ from src import test
 
 STAGES = ["train", "validate", "test"]
 warnings.filterwarnings("ignore")
-
 def run(stage: str):
     if stage not in STAGES:
         raise ValueError(f"Unknown command: {stage}. Allowed commands are {STAGES}")

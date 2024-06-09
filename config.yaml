@@ -1,11 +1,13 @@
 version: '2.0.0'
-batch_size: 64
-n_epochs: 50
-steps_per_epoch: 500
-learning_rate: 0.001
-sample_rate: 48000
-packet_dim: 320
+
 segment_dur: 2 # seconds, more gives problem with the dataset
+device: cuda:0
+frame_dim: 320
+
+batch_size: 64
+n_epochs: 20
+steps_per_epoch: 250
+learning_rate: 0.001
 num_workers: 8
 resume: false
 save: true
@@ -18,10 +20,10 @@ plc_challenge_path: meta/plc_challenge_2024_val_subsample.csv
 tests_dir: tests
 
 codec:
+  sample_rate: 24000
   n_codebooks: 8
   codebook_size: 1024
   model_bitrate: 8kbps
-  device: cuda:1
 
 transformer:
   d_model: 512
@@ -30,4 +32,3 @@ transformer:
   n_layers: 4
   dropout: 0.1
   dropout_attn: 0.0
-  device: cuda:1

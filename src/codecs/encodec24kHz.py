@@ -29,8 +29,6 @@ class EnCodec24kHz(torch.nn.Module):
         self.n_codebooks = 2 ** np.ceil(np.log2(self.kbps))
         self.codebook_size = self.model.quantizer.bins
         self.sample_rate = self.model.sample_rate
-        self.frame_dim = 320
-        self.device = 'cuda:1'
 
     def preprocess_audio(self, wav: torch.Tensor, sr: int) -> torch.Tensor:
         # when installed with pip, encoded seem to have an assertion that prevents batch processing. Namely,

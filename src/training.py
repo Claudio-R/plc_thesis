@@ -16,7 +16,7 @@ def training_loop(dataloader, codec, transformer, code_loss_fn, optimizer):
     for step, wave24kHz in enumerate(progress_bar):
         # (B, 1, T), (B, 1, T/2)
 
-        wave24kHz = wave24kHz.to(codec.device)
+        wave24kHz = wave24kHz.to(transformer.device)
 
         # Encode audio_data: 24000 samples --> 75 packets: 1 packet --> 13 ms
         codes = codec.encode(wave24kHz) #(64, 8, 150)
@@ -60,51 +60,51 @@ def training_loop(dataloader, codec, transformer, code_loss_fn, optimizer):
 def train(config_path):
     print('Training...')
 
+    # CONFIGURATION
     with open(config_path) as handle:
         config = yaml.load(handle, Loader=yaml.FullLoader)
+
+    version = config['version']
+    segment_dur = config['segment_dur']
+    device = config['device']
 
     batch_size = config['batch_size']
     n_epochs = config['n_epochs']
     steps_per_epoch = config['steps_per_epoch']
     learning_rate = config['learning_rate']
+    num_workers = config['num_workers']
+
     training_metadata_path = config['training_metadata_path']
     validation_metadata_path = config['validation_metadata_path']
-    segment_dur = config['segment_dur']
-    num_workers = config['num_workers']
-    transformer_device = config["transformer"]['device']
-    codec_device = config["codec"]['device']
-    version = config['version']
 
     # CODEC
-    codec = load_codec('encodec', config).to(codec_device)
+    codec = load_codec('encodec', config).to(device)
 
     # TRANSFORMER
-    transformer = load_transformer(version, config).to(transformer_device)
-
+    transformer = load_transformer(version, config).to(device)
     optimizer = torch.optim.Adam(transformer.parameters(), lr=learning_rate)
-    version, last_epoch = resume_from_checkpoint(transformer, optimizer, version) if config["resume"] else (version, 0)
+    version, last_epoch = resume_from_checkpoint(transformer, optimizer, version, device) if config["resume"] else (version, 0)
     epochs = range(last_epoch, n_epochs+last_epoch)
 
+    # DATALOADERS
     train_ds = TrainingDataset(codec_sr=codec.sample_rate,
-                               transformer_sr=transformer.sample_rate,
                                metadata_path=training_metadata_path,
                                data_per_epoch=batch_size*steps_per_epoch,
-                               segment_dur=segment_dur,
-                               device=transformer_device)
+                               segment_dur=segment_dur)
 
     val_ds = ValidationDataset(codec_sr=codec.sample_rate,
-                               transformer_sr=transformer.sample_rate,
                                metadata_path=validation_metadata_path,
                                data_per_epoch=steps_per_epoch,
-                               segment_dur=segment_dur,
-                               device=transformer_device)
+                               segment_dur=segment_dur)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=num_workers)
+    train_loader = DataLoader(train_ds, batch_size, shuffle=True, num_workers=num_workers)
+    val_loader = DataLoader(val_ds, shuffle=False, num_workers=num_workers)
 
+    # LOSS FUNCTIONS
     code_loss_fn = torch.nn.CrossEntropyLoss()
     audio_loss_fn = torch.nn.L1Loss()
 
+    # TRAINING LOOP
     for epoch in epochs:
         print(f"\nEpoch {epoch+1}/{epochs[-1]+1}")
         training_loop(train_loader, codec, transformer, code_loss_fn, optimizer)

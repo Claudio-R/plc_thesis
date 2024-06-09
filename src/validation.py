@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .dataset import ValidationDataset
-from .utils import resume_from_checkpoint, load_transformer, load_codec, save
+from .utils import resume_from_checkpoint, load_transformer, load_codec
 
 def validation_loop(dataloader, codec, transformer, audio_loss_fn, code_loss_fn):
     transformer.eval()
@@ -14,7 +14,7 @@ def validation_loop(dataloader, codec, transformer, audio_loss_fn, code_loss_fn)
     with torch.no_grad():
         for step, wave24kHz in enumerate(progress_bar):
 
-            wave24kHz = wave24kHz.to(codec.device)
+            wave24kHz = wave24kHz.to(transformer.device)
 
             # Encode and decode audio_data
             codes = codec.encode(wave24kHz)
@@ -22,8 +22,6 @@ def validation_loop(dataloader, codec, transformer, audio_loss_fn, code_loss_fn)
             tgt_codes = codes[..., 1:]
 
             tgt_audio = codec.decode(tgt_codes)
-            # tgt_audio = codec.decode(tgt_codes).to('cpu')
-            # tgt_audio = librosa.resample(tgt_audio.numpy(), orig_sr=codec.sample_rate, target_sr=transformer.sample_rate)
 
             # Predict logits
             logits = transformer(src_codes)
@@ -49,10 +47,6 @@ def validation_loop(dataloader, codec, transformer, audio_loss_fn, code_loss_fn)
 
             # Predict audio and codes
             pred_audio = codec.decode(pred_codes)
-            # pred_audio = codec.decode(pred_codes).to('cpu')
-            # pred_audio = librosa.resample(pred_audio.numpy(), orig_sr=codec.sample_rate, target_sr=transformer.sample_rate)
-
-            # (tgt_audio, pred_audio) = torch.tensor(tgt_audio).to('cuda'), torch.tensor(pred_audio).to('cuda')
 
             # Compute predictions and losses
             running_audio_loss += audio_loss_fn(pred_audio, tgt_audio).item()
@@ -75,40 +69,37 @@ def validate(config_path):
     with open(config_path) as handle:
         config = yaml.load(handle, Loader=yaml.FullLoader)
 
+    version = config['version']
+    segment_dur = config['segment_dur']
+    device = config['device']
+
     n_epochs = config['n_epochs']
     steps_per_epoch = config['steps_per_epoch']
-    learning_rate = config['learning_rate']
-    validation_metadata_path = config['validation_metadata_path']
-    segment_dur = config['segment_dur']
     num_workers = config['num_workers']
-    transformer_device = config["transformer"]['device']
-    codec_device = config["codec"]['device']
-    version = config['version']
+
+    validation_metadata_path = config['validation_metadata_path']
 
     # CODEC
-    codec = load_codec('encodec', config).to(codec_device)
+    codec = load_codec('encodec', config).to(device)
 
     # TRANSFORMER
-    transformer = load_transformer(version, config).to(transformer_device)
-    optimizer = torch.optim.Adam(transformer.transformer.parameters(), lr=learning_rate)
-    version, last_epoch = resume_from_checkpoint(transformer, optimizer, version) if config["resume"] else ('1.0.0', 0)
+    transformer = load_transformer(version, config).to(device)
+    version, last_epoch = resume_from_checkpoint(transformer, None, version, device) if config["resume"] else (version, 0)
 
+    # DATALOADER
     val_ds = ValidationDataset(codec_sr=codec.sample_rate,
-                               transformer_sr=transformer.sample_rate,
                                metadata_path=validation_metadata_path,
                                data_per_epoch=steps_per_epoch,
-                               segment_dur=segment_dur,
-                               device=transformer_device)
+                               segment_dur=segment_dur)
 
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=num_workers)
+    val_loader = DataLoader(val_ds, shuffle=False, num_workers=num_workers)
 
+    # LOSS FUNCTIONS
     code_loss_fn = torch.nn.CrossEntropyLoss()
     audio_loss_fn = torch.nn.L1Loss()
 
+    # TEST LOOP
     for epoch in range(last_epoch, n_epochs + last_epoch):
         print(f"\nEpoch {epoch + 1}/{n_epochs}")
-        avg_audio_loss, avg_code_loss = validation_loop(val_loader, codec, transformer, audio_loss_fn, code_loss_fn)
-        if config['save']:
-            save(version, epoch+1, transformer, optimizer, avg_audio_loss, avg_code_loss, config['epoch_to_save'])
-
+        validation_loop(val_loader, codec, transformer, audio_loss_fn, code_loss_fn)
     print("Done!")
