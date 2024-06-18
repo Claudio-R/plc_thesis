@@ -221,12 +221,13 @@ class TestDataset(torch.utils.data.Dataset):
     @torch.no_grad()
     def __getitem__(self, index):
         sample = self.metadata.loc[index]
-        wave_24kHz, sr = librosa.load(sample.path, sr=self.codec_sr, mono=True)
+        wave24kHz, sr = librosa.load(sample.path, sr=self.codec_sr, mono=True)
+        wave24kHz = wave24kHz[np.newaxis, :]
 
         # Adapt PLC Challenge traces to new samplerate
         if 'trace' in self.metadata.columns:
             trace = sample.trace.split()
-            num_packets = math.ceil(wave_24kHz.shape[-1] // self.frame_dim)
+            num_packets = math.ceil(wave24kHz.shape[-1] // self.frame_dim)
             pad_length = num_packets - len(trace)
             for i in range(pad_length):
                 trace.append(trace[i])
@@ -235,7 +236,7 @@ class TestDataset(torch.utils.data.Dataset):
 
         # Or create new traces
         else:
-            trace = create_trace(wave_24kHz, self.frame_dim, random_trace=self.use_random_trace)
+            trace = create_trace(wave24kHz, self.frame_dim, random_trace=self.use_random_trace)
 
-        return wave_24kHz, trace
+        return wave24kHz, trace
 

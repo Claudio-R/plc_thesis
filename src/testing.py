@@ -8,7 +8,7 @@ from tqdm import tqdm
 from .utils import simulate_packet_loss, load_transformer, load_codec, resume_from_checkpoint
 from .dataset import TestDataset
 
-def test_loop(tests_dir, test_ID, dataloader, codec, transformer, version, sr=44100):
+def test_loop(tests_dir, test_ID, dataloader, codec, transformer, frame_dim, version):
     """
     Simulate the transmission and reconstruction of lossy audio
     :param tests_dir:
@@ -35,6 +35,7 @@ def test_loop(tests_dir, test_ID, dataloader, codec, transformer, version, sr=44
 
     # Start testing
     transformer.eval()
+    sr = codec.sample_rate
 
     with torch.no_grad():
         for Track_ID, (wave24kHz, trace) in enumerate(tqdm(dataloader, desc='- Testing')):
@@ -46,12 +47,12 @@ def test_loop(tests_dir, test_ID, dataloader, codec, transformer, version, sr=44
             tgt_wave24kHz = codec.decode(codes)
 
             # Simulate_packet_loss
-            tgt_wave24kHz_lost = simulate_packet_loss(tgt_wave24kHz, trace, packet_dim=codec.frame_dim)
+            tgt_wave24kHz_lost = simulate_packet_loss(tgt_wave24kHz, trace, packet_dim=frame_dim)
 
             # Inference
             codes_lost = codec.encode(tgt_wave24kHz_lost)
-            max_sequence_length = int(transformer.context_length / codec.frame_dim)
-            for i, loss in enumerate(trace):
+            max_sequence_length = int(transformer.context_length / frame_dim)
+            for i, loss in enumerate(trace[0,:]):
                 if loss:
                     first_idx = max(0, i - max_sequence_length)
                     src_codes = codes_lost[..., first_idx:i]
@@ -64,7 +65,7 @@ def test_loop(tests_dir, test_ID, dataloader, codec, transformer, version, sr=44
 
             # Save audio files
             sf.write(f'{clean_dir}/tgt_audio_{Track_ID}.wav', tgt_wave24kHz.squeeze().to('cpu'), sr)
-            sf.write(f'{lossy_dir}/tgt_audio_{Track_ID}.wav', tgt_wave24kHz_lost.squeeze(), sr)
+            sf.write(f'{lossy_dir}/tgt_audio_{Track_ID}.wav', tgt_wave24kHz_lost.squeeze().to('cpu'), sr)
             sf.write(f'{enhanced_dir}/tgt_audio_{Track_ID}.wav', pred_wave24kHz.squeeze().to('cpu'), sr)
             
             # Save traces
@@ -105,4 +106,4 @@ def test(config_path, resume=True):
     test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=num_workers)
 
     # TEST LOOP
-    test_loop(tests_dir, 2, test_loader, codec, transformer, version)
+    test_loop(tests_dir, 2, test_loader, codec, transformer, frame_dim, version)

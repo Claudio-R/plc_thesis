@@ -209,7 +209,7 @@ class TransformerDecoderBlock(nn.Module):
         self.rcs_block = ResCumSumLayer(d_model, 4., dropout)
         self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
-    def forward(self, x):
+    def forward(self, x, mask):
         """
             params:
             x: (B, T, D)
@@ -218,12 +218,9 @@ class TransformerDecoderBlock(nn.Module):
             returns:
             x: (B, T, D)
         """
-        # New: Moved here as we could think of a scenario in which x.size() changes between TransformerDecoderBlocks
-        mask = nn.Transformer.generate_square_subsequent_mask(sz=x.size(-2), device=self.device) # Generates an additive mask for the target sequence
         x = x + self.attention_block(x, x, x, mask)
         x = x + self.feed_forward_block(x)
         x = x + self.rcs_block(x)
-
         return x
 
 class TransformerDecoder(nn.Module):
@@ -233,7 +230,7 @@ class TransformerDecoder(nn.Module):
             TransformerDecoderBlock(d_model, d_attn, n_heads, dropout, dropout_attn) for _ in range(n_layers)
         ])
 
-    def forward(self, x):
+    def forward(self, x, mask):
         """
             params:
             x: FloatTensor(B, T, D)
@@ -242,7 +239,7 @@ class TransformerDecoder(nn.Module):
             x: FloatTensor(B, T, D)
         """
         for decoder_block in self.decoder_blocks:
-            x = decoder_block(x)
+            x = decoder_block(x, mask)
         return x
 
 
@@ -250,7 +247,6 @@ class Transformer(nn.Module):
     """ Transformer model """
     def __init__(self, config):
         super().__init__()
-        self.sample_rate = config["codec"]["sample_rate"]
         self.n_codebooks = config["codec"]["n_codebooks"]
         self.codebook_size = config["codec"]["codebook_size"]
         self.d_model = config["transformer"]["d_model"]
@@ -259,8 +255,9 @@ class Transformer(nn.Module):
         self.n_layers = config["transformer"]["n_layers"]
         self.dropout = config["transformer"]["dropout"]
         self.dropout_attn = config["transformer"]["dropout_attn"]
-        self.device = config["transformer"]["device"]
-        self.context_length = self.sample_rate * config["segment_dur"]
+        self.device = config["device"]
+        self.context_length = config["codec"]["sample_rate"] * config["segment_dur"] # 48000 samples
+        self.max_sequence_length = self.context_length / config['frame_dim'] # 150 frames
 
         self.input_embeddings = InputEmbeddings(self.n_codebooks, self.codebook_size, self.d_model)
         self.decoder = TransformerDecoder(self.n_layers, self.d_model, self.d_attn, self.n_heads, self.dropout, self.dropout_attn)
@@ -268,8 +265,9 @@ class Transformer(nn.Module):
 
     def forward(self, x):
         """ codes: (B, N, T) --> codes: (B, N, T) """
+        mask = nn.Transformer.generate_square_subsequent_mask(sz=x.size(-1), device=self.device)
         x = self.input_embeddings(x)  # (B, N, T) --> (B, T, D)
-        x = self.decoder(x)  # (B, T, D) --> (B, T, D)
+        x = self.decoder(x, mask)  # (B, T, D) --> (B, T, D)
         x = self.output_projection(x)  # (B, T, D) --> (B, N, T, C)
         return x
 

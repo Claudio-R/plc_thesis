@@ -55,9 +55,9 @@ def resume_from_checkpoint(model, optimizer, current_version:str, map_location:s
 
     return version, epoch
 
-def load_codec(codec_name:str='encodec', config=None):
+def load_codec(codec_name:str='encodec', kbps:float=6.):
     if codec_name == 'encodec':
-        return src.codecs.EnCodec24kHz()
+        return src.codecs.EnCodec24kHz(kbps=kbps)
     else:
         raise ValueError(f'Please provide a valid codec: [{codec_name}]')
 
@@ -140,7 +140,7 @@ def simulate_packet_loss(y_ref: np.ndarray, trace: np.ndarray, packet_dim:int) -
     y_lost = deepcopy(y_ref)
 
     # Simulate packet losses according to given trace
-    for i, is_lost in enumerate(trace):
+    for i, is_lost in enumerate(trace[0,:]):
         if is_lost:
             idx = i * packet_dim
             y_lost[..., idx: idx + packet_dim] = 0.

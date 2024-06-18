@@ -1,17 +1,17 @@
-version: '2.0.0'
+version: '2.0.1'
 
 segment_dur: 2 # seconds, more gives problem with the dataset
-device: cuda:0
+device: cuda:1
 frame_dim: 320
 
 batch_size: 64
-n_epochs: 20
+n_epochs: 200
 steps_per_epoch: 250
-learning_rate: 0.001
+learning_rate: 0.0001
 num_workers: 8
 resume: false
 save: true
-epoch_to_save: 5
+epoch_to_save: 25
 
 training_metadata_path: meta/training.csv
 validation_metadata_path: meta/validation.csv
@@ -21,9 +21,9 @@ tests_dir: tests
 
 codec:
   sample_rate: 24000
-  n_codebooks: 8
+  n_codebooks: 4
   codebook_size: 1024
-  model_bitrate: 8kbps
+  model_bitrate: 6kbps
 
 transformer:
   d_model: 512
