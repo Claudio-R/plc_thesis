@@ -91,12 +91,14 @@ def test(config_path, resume=True):
     tests_dir = config['tests_dir']
 
     # CODEC
-    codec = load_codec('encodec', config).to(device)
+    codec = load_codec('encodec', 6.).to(device)
 
     # TRANSFORMER
     transformer = load_transformer(version, config).to(device)
-    version, _ = resume_from_checkpoint(transformer, None, version, device) if resume else (version, 0)
-
+    # version, _ = resume_from_checkpoint(transformer, None, version, device) if resume else (version, 0)
+    pytorch_total_params = sum(p.numel() for p in transformer.parameters() if p.requires_grad)
+    print('tot params:', pytorch_total_params)
+    input('...')
     # DATALOADER
     test_ds = TestDataset(codec_sr=codec.sample_rate,
                           metadata_path=test_metadata_path,

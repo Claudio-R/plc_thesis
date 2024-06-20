@@ -261,7 +261,7 @@ class Transformer(nn.Module):
 
         self.input_embeddings = InputEmbeddings(self.n_codebooks, self.codebook_size, self.d_model)
         self.decoder = TransformerDecoder(self.n_layers, self.d_model, self.d_attn, self.n_heads, self.dropout, self.dropout_attn)
-        self.output_projection = OutputProjections(self.n_codebooks, self.codebook_size, self.d_model) # (512, 1024) = 11.6 ms predetti per packet
+        self.output_projection = OutputProjections(self.n_codebooks, self.codebook_size, self.d_model)
 
     def forward(self, x):
         """ codes: (B, N, T) --> codes: (B, N, T) """

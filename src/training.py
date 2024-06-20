@@ -20,8 +20,23 @@ def training_loop(dataloader, codec, transformer, code_loss_fn, optimizer):
 
         # Encode audio_data: 24000 samples --> 75 packets: 1 packet --> 13 ms
         codes = codec.encode(wave24kHz) #(64, 8, 150)
-        src_codes = codes[..., :-1]
-        tgt_codes = codes[..., 1:]
+
+        # PARALLEL PATTERN
+        # src_codes = codes[..., :-1]
+        # tgt_codes = codes[..., 1:]
+
+        # DELAYED PATTERN
+        # remove last 4 tokens... so you may want to start from (B, 4, 154), or not... who cares!
+        # EDIT: 06.20.24 per il momento utilizzo sequence di 150 e ne tolgo 4
+        nq = transformer.n_codebooks
+        src_codes = codes[..., :-nq]
+
+        # assuming codes[:, 0, :] to be the first quantizer, i.e., the most important
+        for i in range(1, nq):
+            codes[:, i:, :] = torch.roll(codes[:, i:, :], shifts=1, dims=-1)
+
+        # remove first 4 tokens... so you may want to start from (B, 4, 154), or not... who cares!
+        tgt_codes = codes[..., nq:]
 
         # Call transformer
         logits = transformer(src_codes)
@@ -73,18 +88,24 @@ def train(config_path):
     steps_per_epoch = config['steps_per_epoch']
     learning_rate = config['learning_rate']
     num_workers = config['num_workers']
+    kbps = config['codec']['bitrate']
 
     training_metadata_path = config['training_metadata_path']
     validation_metadata_path = config['validation_metadata_path']
 
     # CODEC
-    codec = load_codec('encodec', config).to(device)
+    codec = load_codec('encodec', kbps).to(device)
 
     # TRANSFORMER
     transformer = load_transformer(version, config).to(device)
+
+    # OPTIMIZER
     optimizer = torch.optim.Adam(transformer.parameters(), lr=learning_rate)
     version, last_epoch = resume_from_checkpoint(transformer, optimizer, version, device) if config["resume"] else (version, 0)
     epochs = range(last_epoch, n_epochs+last_epoch)
+
+    # SCHEDULER
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5)
 
     # DATALOADERS
     train_ds = TrainingDataset(codec_sr=codec.sample_rate,
@@ -111,5 +132,6 @@ def train(config_path):
         avg_audio_loss, avg_code_loss = validation_loop(val_loader, codec, transformer, audio_loss_fn, code_loss_fn)
         if config['save']:
             save(version, epoch+1, transformer, optimizer, avg_audio_loss, avg_code_loss, config['epoch_to_save'])
+        scheduler.step(avg_code_loss)
 
     print("Done!")
