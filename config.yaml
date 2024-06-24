@@ -1,22 +1,23 @@
-version: '2.0.1'
+version: '2.0.0'
 
 segment_dur: 2 # seconds, more gives problem with the dataset
-device: cuda:1
+device: cuda:0
 frame_dim: 320
 
 batch_size: 64
-n_epochs: 200
+n_epochs: 400
 steps_per_epoch: 250
-learning_rate: 0.00001
+learning_rate: 0.0001
 num_workers: 8
 resume: false
 save: true
 epoch_to_save: 25
 
-training_metadata_path: meta/training.csv
-validation_metadata_path: meta/validation.csv
-test_metadata_path: meta/test.csv
+speech_dataset: dataset/vctk.csv
+environment_dataset: dataset/fsd50k.csv
+music_dataset: dataset/jamendo.csv
 plc_challenge_path: meta/plc_challenge_2024_val_subsample.csv
+
 tests_dir: tests
 
 codec:

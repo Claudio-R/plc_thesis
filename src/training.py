@@ -4,7 +4,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .validation import validation_loop
-from .testing import test_loop
 from .dataset import TrainingDataset, ValidationDataset
 from .utils import resume_from_checkpoint, save, load_codec, load_transformer
 
@@ -22,21 +21,19 @@ def training_loop(dataloader, codec, transformer, code_loss_fn, optimizer):
         codes = codec.encode(wave24kHz) #(64, 8, 150)
 
         # PARALLEL PATTERN
-        # src_codes = codes[..., :-1]
-        # tgt_codes = codes[..., 1:]
+        src_codes = codes[..., :-1]
+        tgt_codes = codes[..., 1:]
 
         # DELAYED PATTERN
-        # remove last 4 tokens... so you may want to start from (B, 4, 154), or not... who cares!
-        # EDIT: 06.20.24 per il momento utilizzo sequence di 150 e ne tolgo 4
-        nq = transformer.n_codebooks
-        src_codes = codes[..., :-nq]
-
-        # assuming codes[:, 0, :] to be the first quantizer, i.e., the most important
-        for i in range(1, nq):
-            codes[:, i:, :] = torch.roll(codes[:, i:, :], shifts=1, dims=-1)
-
-        # remove first 4 tokens... so you may want to start from (B, 4, 154), or not... who cares!
-        tgt_codes = codes[..., nq:]
+        # # remove last 4 tokens... so you may want to start from (B, 4, 154), or not... who cares!
+        # # EDIT: 06.20.24 per il momento utilizzo sequence di 150 e ne tolgo 4
+        # nq = transformer.n_codebooks
+        # src_codes = codes[..., :-nq]
+        # # assuming codes[:, 0, :] to be the first quantizer, i.e., the most important
+        # for i in range(1, nq):
+        #     codes[:, i:, :] = torch.roll(codes[:, i:, :], shifts=1, dims=-1)
+        # # remove first 4 tokens... so you may want to start from (B, 4, 154), or not... who cares!
+        # tgt_codes = codes[..., nq:]
 
         # Call transformer
         logits = transformer(src_codes)
@@ -90,8 +87,9 @@ def train(config_path):
     num_workers = config['num_workers']
     kbps = config['codec']['bitrate']
 
-    training_metadata_path = config['training_metadata_path']
-    validation_metadata_path = config['validation_metadata_path']
+    speech_dataset = config['speech_dataset']
+    environment_dataset = config['environment_dataset']
+    music_dataset = config['music_dataset']
 
     # CODEC
     codec = load_codec('encodec', kbps).to(device)
@@ -109,17 +107,17 @@ def train(config_path):
 
     # DATALOADERS
     train_ds = TrainingDataset(codec_sr=codec.sample_rate,
-                               metadata_path=training_metadata_path,
+                               metadata_path=speech_dataset,
                                data_per_epoch=batch_size*steps_per_epoch,
                                segment_dur=segment_dur)
 
     val_ds = ValidationDataset(codec_sr=codec.sample_rate,
-                               metadata_path=validation_metadata_path,
+                               metadata_path=speech_dataset,
                                data_per_epoch=steps_per_epoch,
                                segment_dur=segment_dur)
 
     train_loader = DataLoader(train_ds, batch_size, shuffle=True, num_workers=num_workers)
-    val_loader = DataLoader(val_ds, shuffle=False, num_workers=num_workers)
+    val_loader = DataLoader(val_ds, shuffle=True, num_workers=num_workers)
 
     # LOSS FUNCTIONS
     code_loss_fn = torch.nn.CrossEntropyLoss()

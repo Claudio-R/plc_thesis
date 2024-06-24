@@ -7,16 +7,14 @@ from torch.utils.data import Dataset
 import tqdm
 from audiomentations import Compose, AddGaussianNoise, PolarityInversion, PitchShift, TanhDistortion, TimeStretch
 import torch
-import musdb
-from datasets import load_dataset
+# import musdb
+# from datasets import load_dataset
 import soundfile as sf
 from .utils import create_trace
 import math
-import torchaudio as ta
-from torchaudio.transforms import Resample
+# import torchaudio as ta
+# from torchaudio.transforms import Resample
 import librosa
-
-# TODO: remove AudioSignal
 
 def load_from_dataset(subset: str,
                       music_dataset: str = "/nas/home/crapisarda/Medley-solo-DB",
