@@ -20,19 +20,15 @@ def validation_loop(dataloader, codec, transformer, audio_loss_fn, code_loss_fn)
             codes = codec.encode(wave24kHz)
 
             # PARALLEL PATTERN
-            src_codes = codes[..., :-1]
-            tgt_codes = codes[..., 1:]
+            # src_codes = codes[..., :-1]
+            # tgt_codes = codes[..., 1:]
 
             # DELAYED PATTERN
-            # # remove last 4 tokens... so you may want to start from (B, 4, 154), or not... who cares!
-            # # EDIT: 06.20.24 per il momento utilizzo sequence di 150 e ne tolgo 4
-            # nq = transformer.n_codebooks
-            # src_codes = codes[..., :-nq]
-            # # assuming codes[:, 0, :] to be the first quantizer, i.e., the most important
-            # for i in range(1, nq):
-            #     codes[:, i:, :] = torch.roll(codes[:, i:, :], shifts=1, dims=-1)
-            # # remove first 4 tokens... so you may want to start from (B, 4, 154), or not... who cares!
-            # tgt_codes = codes[..., nq:]
+            nq = transformer.n_codebooks
+            src_codes = codes[..., :-nq]
+            for i in range(1, nq):
+                codes[:, i:, :] = torch.roll(codes[:, i:, :], shifts=1, dims=-1)
+            tgt_codes = codes[..., nq:]
 
             tgt_audio = codec.decode(tgt_codes)
 

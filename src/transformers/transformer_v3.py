@@ -275,4 +275,4 @@ class Transformer(nn.Module):
         logits = self.forward(x)
         codebook_index_probs = torch.nn.functional.softmax(logits, dim=-1)  # shape: (B, n_codebooks, S, C)
         pred_codes = torch.argmax(codebook_index_probs, dim=-1)
-        return pred_codes
+        return logits, pred_codes

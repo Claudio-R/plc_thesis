@@ -61,7 +61,8 @@ def load_codec(codec_name:str='encodec', kbps:float=6.):
     else:
         raise ValueError(f'Please provide a valid codec: [{codec_name}]')
 
-def load_transformer(version, config):
+def load_transformer(config):
+    version = config['version']
     version_id = version.split('.')[0]
     if version_id == '1':
         return src.transformers.TransformerV1()
@@ -135,14 +136,8 @@ def create_trace(y_ref, frame_dim, loss_rate: int=10, random_trace:bool = False,
     return trace
 
 
-def simulate_packet_loss(y_ref: np.ndarray, trace: np.ndarray, packet_dim:int) -> np.ndarray:
-    # Copy the clean signal to create the lossy signal
-    y_lost = deepcopy(y_ref)
-
-    # Simulate packet losses according to given trace
+def simulate_packet_loss(codes_ref: np.ndarray, trace: np.ndarray, packet_dim:int) -> np.ndarray:
+    codes_lost = deepcopy(codes_ref)
     for i, is_lost in enumerate(trace[0,:]):
-        if is_lost:
-            idx = i * packet_dim
-            y_lost[..., idx: idx + packet_dim] = 0.
-
-    return y_lost
+        if is_lost: codes_lost[..., :, i] = 0
+    return codes_lost

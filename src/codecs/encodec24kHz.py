@@ -22,13 +22,13 @@ class EnCodec24kHz(torch.nn.Module):
 
         assert kbps in self.model.target_bandwidths, f'Target bandwidth ({kbps} kbps) is not supported.'
 
-        self.kbps = kbps
-        self.model.set_target_bandwidth(self.kbps)
         self.model.eval()
-
+        self.model.set_target_bandwidth(self.kbps)
+        self.kbps = kbps
         self.n_codebooks = 2 ** np.ceil(np.log2(self.kbps))
         self.codebook_size = self.model.quantizer.bins
         self.sample_rate = self.model.sample_rate
+        self.frame_dim = 320
 
     def preprocess_audio(self, wav: torch.Tensor, sr: int) -> torch.Tensor:
         # when installed with pip, encoded seem to have an assertion that prevents batch processing. Namely,
