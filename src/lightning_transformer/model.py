@@ -1,17 +1,24 @@
 import os
-import torch
 import lightning as L
 import torchmetrics
 import soundfile as sf
 import src.utils as utils
+from src.codecs.encodec24kHz import EnCodec24kHz
+from src.transformers.transformer import Transformer
 
-# define the LightningModule
+import torch
+from torchmetrics.audio import ShortTimeObjectiveIntelligibility
+
 class Model(L.LightningModule):
     def __init__(self, config):
         # Model
         super().__init__()
-        self.codec = utils.load_codec()
-        self.transformer = utils.load_transformer(config)
+        self.codec = EnCodec24kHz()
+        self.transformer = Transformer(config,
+                                       self.codec.n_codebooks,
+                                       self.codec.codebook_size,
+                                       self.codec.sample_rate,
+                                       self.codec.frame_dim)
         self.mode = 'parallel' # ['parallel', 'delayed']
 
         # Loss functions
@@ -20,26 +27,25 @@ class Model(L.LightningModule):
 
         # Metrics
         self.accuracy_fn = torchmetrics.Accuracy(task='multiclass', num_classes=self.codec.codebook_size)
-        self.pesq_fn = torchmetrics.audio.PerceptualEvaluationSpeechQuality(self.codec.sample_rate, 'wb')
-        self.stoi_fn = torchmetrics.audio.ShortTimeObjectiveIntelligibility(self.codec.sample_rate, False)
+        self.stoi_fn = ShortTimeObjectiveIntelligibility(self.codec.sample_rate, False)
 
         # Folders
-        version_id = self.transformer.version.split('.')[0]
         self.test_dir = f'test/{self.mode}'
         self.clean_dir = f'{self.test_dir}/clean'
         self.lossy_dir = f'{self.test_dir}/lossy'
-        self.enhanced_dir = f'{self.test_dir}/enhanced/model_v{version_id}/{self.transformer.version}'
+        self.enhanced_dir = f'{self.test_dir}/enhanced/{self.mode}/{self.transformer.version}'
         self.traces_dir = f'{self.test_dir}/traces'
+        self.ckpt_dir = f'meta/checkpoint/{self.mode}/{self.transformer.version}'
         os.makedirs(self.clean_dir, exist_ok=True)
         os.makedirs(self.lossy_dir, exist_ok=True)
         os.makedirs(self.enhanced_dir, exist_ok=True)
         os.makedirs(self.traces_dir, exist_ok=True)
 
-
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        for param in self.codec.parameters():
+            param.requires_grad = False
+        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, self.parameters()), lr=1e-3)
         return optimizer
-
 
     def forward(self, audio, audio_idx, trace):
         # Encoding
@@ -71,7 +77,6 @@ class Model(L.LightningModule):
         audio_loss = self.compute_audio_loss(pred_audio, tgt_audio)
         logs = {
             'audio_loss': audio_loss,
-            'pesq': self.pesq_fn(pred_audio, tgt_audio),
             'stoi': self.stoi_fn(pred_audio, tgt_audio)
         }
         self.log_dict(logs)
@@ -86,21 +91,20 @@ class Model(L.LightningModule):
                 f.write('{}\n'.format(trace_idx))
         return logs
 
-
     def training_step(self, batch, batch_idx):
-        codes = self.codec.encode(batch)  # (64, 8, 150)
+        self.codec.eval()
+        codes = self.codec.encode(batch)
         src_codes, tgt_codes = self.split_codes(codes)
         logits = self.transformer(src_codes)
         code_loss = self.compute_code_loss(logits, tgt_codes)
         self.log(name="code_loss", value=code_loss, prog_bar=True)
         return code_loss
 
-
     def validation_step(self, batch, batch_idx):
         codes = self.codec.encode(batch)
         src_codes, tgt_codes = self.split_codes(codes)
         logits, pred_codes = self.transformer.predict(src_codes)
-        tgt_audio = self.codec.decode(codes)
+        tgt_audio = self.codec.decode(tgt_codes)
         pred_audio = self.codec.decode(pred_codes)
         code_loss = self.compute_code_loss(logits, tgt_codes)
         audio_loss = self.compute_audio_loss(pred_audio, tgt_audio)
@@ -108,15 +112,13 @@ class Model(L.LightningModule):
             'code_loss': code_loss,
             'audio_loss': audio_loss,
             'accuracy': self.accuracy_fn(pred_codes, tgt_codes),
-            'pesq': self.pesq_fn(pred_audio, tgt_audio),
             'stoi': self.stoi_fn(pred_audio, tgt_audio)
         }
         self.log_dict(logs)
         return logs
 
-
     def split_codes(self, codes):
-        if self.parallel:
+        if self.mode == 'parallel':
             src_codes = codes[..., :-1]
             tgt_codes = codes[..., 1:]
         else:
@@ -127,17 +129,13 @@ class Model(L.LightningModule):
             tgt_codes = codes[..., nq:, :]
         return src_codes, tgt_codes
 
-
     def compute_code_loss(self, logits, tgt_codes):
-        code_loss = torch.mean(
-            torch.Tensor([
-                self.code_loss_fn(
-                    logits[:,k,:,:].view(-1, logits.size(-1)),
-                    tgt_codes[:,k,:,:].view(-1, tgt_codes.size(-1)))
-                for k in range(self.transformer.n_codebooks)
-            ]))
+        code_loss = sum([self.code_loss_fn(
+            logits[:, k, :, :].contiguous().view(-1, logits.size(-1)),
+            tgt_codes[:, k, :].contiguous().view(-1))
+            for k in range(self.codec.n_codebooks)])
+        code_loss /= self.codec.n_codebooks
         return code_loss
-
 
     def compute_audio_loss(self, pred_audio, tgt_audio):
         return self.audio_loss_fn(pred_audio, tgt_audio)

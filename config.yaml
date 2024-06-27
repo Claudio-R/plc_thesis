@@ -1,4 +1,4 @@
-version: '2.0.0'
+version: '1.0.0'
 
 segment_dur: 2 # seconds, more gives problem with the dataset
 device: cuda:0
@@ -13,6 +13,7 @@ resume: false
 save: true
 epoch_to_save: 25
 
+ckpt_path: meta/checkpoint
 speech_dataset: dataset/vctk.csv
 environment_dataset: dataset/fsd50k.csv
 music_dataset: dataset/jamendo.csv

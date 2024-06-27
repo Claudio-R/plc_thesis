@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 from typing import Optional
-from rotary_embedding_torch import RotaryEmbedding
+# from rotary_embedding_torch import RotaryEmbedding
 import torch.nn.functional as F
 
 class InputEmbeddings(nn.Module):
@@ -82,7 +82,7 @@ class Transformer(nn.Module):
 
     def forward(self, x):
         """ codes: (B, N, T) --> codes: (B, N, T) """
-        mask = nn.Transformer.generate_square_subsequent_mask(sz=x.size(-1), device=self.device)
+        mask = nn.Transformer.generate_square_subsequent_mask(sz=x.size(-1))
         x = self.input_embeddings(x)  # (B, N, T) --> (B, T, D)
         x = self.decoder(tgt=x, memory=x, tgt_mask=mask, memory_mask=mask, tgt_is_causal=True, memory_is_causal=True)  # (B, T, D) --> (B, T, D)
         x = self.output_projection(x)  # (B, T, D) --> (B, N, T, C)

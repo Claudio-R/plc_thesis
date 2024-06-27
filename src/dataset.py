@@ -3,18 +3,37 @@ import random
 from typing import Union
 import numpy as np
 import pandas as pd
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 import tqdm
 from audiomentations import Compose, AddGaussianNoise, PolarityInversion, PitchShift, TanhDistortion, TimeStretch
 import torch
-# import musdb
-# from datasets import load_dataset
 import soundfile as sf
 from .utils import create_trace
 import math
-# import torchaudio as ta
-# from torchaudio.transforms import Resample
 import librosa
+import lightning as L
+from src.codecs.encodec24kHz import EnCodec24kHz
+
+class VCTKDataModule(L.LightningDataModule):
+    def __init__(self, train_dataset:Dataset=None, val_dataset:Dataset=None, test_dataset:Dataset=None, predict_dataset:Dataset=None):
+        super().__init__()
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+        self.test_dataset = test_dataset
+        self.predict_dataset = predict_dataset
+        self.batch_size = 64
+
+    def train_dataloader(self):
+        return DataLoader(dataset=self.train_dataset, batch_size=self.batch_size, shuffle=True)
+
+    def val_dataloader(self):
+        return DataLoader(dataset=self.val_dataset, batch_size=self.batch_size, shuffle=False)
+
+    def test_dataloader(self):
+        return DataLoader(dataset=self.test_dataset, batch_size=self.batch_size, shuffle=False)
+
+    def predict_dataloader(self):
+        return DataLoader(dataset=self.predict_dataset, batch_size=1, shuffle=False)
 
 def load_from_dataset(subset: str,
                       music_dataset: str = "/nas/home/crapisarda/Medley-solo-DB",
@@ -63,15 +82,14 @@ def load_from_dataset(subset: str,
     df = pd.DataFrame(handle)
     return df
 
-
-def load_random_audio_segment(df: pd.DataFrame, codec_sr: int, segment_dur: float,
-                              p: list = [0.3, 0.3, 0.3, 0.3, 0.3], augment_bool:bool = False) -> torch.Tensor:
+def load_audio_segment(df: pd.DataFrame, idx: int, codec_sr: int, segment_dur: float,
+                       p: list = [0.3, 0.3, 0.3, 0.3, 0.3], augment_bool:bool = False) -> torch.Tensor:
     """
     Load a random audio file according to probability and applies audio augmentation
     :returns:
     audio_data: Tensor of shape (1, segment_dur*sample_rate)
     """
-
+    # TODO: use indexing and check duration (prepare data using VCTKDataModule)
     # audio_type = "speech" if torch.rand(1) > 0.5 else "music"
     audio_type = "speech"
     sample = df.loc[((df.type == audio_type) & (df.duration >= segment_dur))].sample()
@@ -82,7 +100,7 @@ def load_random_audio_segment(df: pd.DataFrame, codec_sr: int, segment_dur: floa
 
     # Applies resample
     # BUG: ta.load carica frammenti di lunghezza random
-    wave24kHz, sr = librosa.load(path, sr=codec_sr, offset=random_offset, duration=(segment_dur), mono=True)
+    audio, sr = librosa.load(path, sr=codec_sr, offset=random_offset, duration=(segment_dur), mono=True)
 
     if augment_bool:
         augment = Compose([
@@ -92,26 +110,47 @@ def load_random_audio_segment(df: pd.DataFrame, codec_sr: int, segment_dur: floa
             TanhDistortion(p=p[3]),
             TimeStretch(min_rate=1, max_rate=1.25, p=p[4]),
         ])
-        wave24kHz = augment(wave24kHz, sample_rate=codec_sr)
+        audio = augment(audio, sample_rate=codec_sr)
 
-    wave24kHz = wave24kHz[np.newaxis, :int((segment_dur) * codec_sr)]
+    audio = audio[:int((segment_dur) * codec_sr)]
+    # wave24kHz = wave24kHz[np.newaxis, :int((segment_dur) * codec_sr)]
 
-    return wave24kHz
+    return audio
+
+    # sample = df.iloc[[idx]]
+    # path = sample["path"].values[0]
+    # dur = sample["duration"].values[0]
+    # random_offset = random.uniform(0, dur - (segment_dur))
+    # audio, sr = librosa.load(path, sr=codec_sr, offset=random_offset, duration=(segment_dur), mono=True)
+    #
+    # if augment_bool:
+    #     augment = Compose([
+    #         AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=p[0]),
+    #         PolarityInversion(p=p[1]),
+    #         PitchShift(min_semitones=-4, max_semitones=4, p=p[2]),
+    #         TanhDistortion(p=p[3]),
+    #         TimeStretch(min_rate=1, max_rate=1.25, p=p[4]),
+    #     ])
+    #     audio = augment(audio, sample_rate=codec_sr)
+    #
+    # audio = audio[np.newaxis, :int((segment_dur) * codec_sr)]
+    # return audio
 
 
-def load_random_audio_mix(df: pd.DataFrame, codec_sr: int, segment_dur: float,
+def load_random_audio_mix(df: pd.DataFrame, idx, codec_sr: int, segment_dur: float,
                           alpha: float = 2.0,
                           mix_bool:bool = False,
                           augment_bool:bool = False):
 
-    wave24kHz = load_random_audio_segment(df, codec_sr, segment_dur, augment_bool=augment_bool)
+    audio = load_audio_segment(df, idx, codec_sr, segment_dur, augment_bool=augment_bool)
     if mix_bool:
-        for _ in range(2):
-            gain = np.random.beta(alpha, alpha)
-            signal_24kHz_ = load_random_audio_segment(df, codec_sr, segment_dur, augment_bool=augment_bool)
-            wave24kHz = gain * wave24kHz + (1 - gain) * signal_24kHz_
+        gain = 0.2
+        for i in range(2):
+            gain = gain / (i+1)
+            signal_24kHz_ = load_audio_segment(df, codec_sr, segment_dur, augment_bool=augment_bool)
+            audio = gain * audio + (1 - gain) * signal_24kHz_
 
-    return wave24kHz
+    return audio
 
 
 class TrainingDataset(Dataset):
@@ -119,19 +158,19 @@ class TrainingDataset(Dataset):
                  codec_sr: int,
                  metadata_path: str,
                  data_per_epoch: int,
-                 segment_dur: float
+                 segment_dur: float,
+                 n_epochs: int
                  ):
         self.codec_sr = codec_sr
         self.data_per_epoch = data_per_epoch
         self.segment_dur = segment_dur
         self.metadata = self.load_dataframe(metadata_path)
+        self.n_epochs = n_epochs
+        self.codec = EnCodec24kHz()
 
     def load_dataframe(self, metadata_path) -> pd.DataFrame:
-        with open(metadata_path, 'rb') as handle:
-            print(f'Loading data from cache: {metadata_path}.')
-            df = pd.read_csv(handle)
         try:
-            pass
+            df = pd.read_csv(metadata_path)
         except:
             print(f'Cannot locate caches at {metadata_path}. Collecting data...')
             df = load_from_dataset(subset='training')
@@ -143,11 +182,10 @@ class TrainingDataset(Dataset):
 
     @torch.no_grad()
     def __getitem__(self, index) -> torch.Tensor:
-        """
-        :param index:
-        :return: wave_48kHz, wave_24kHz
-        """
-        return load_random_audio_mix(self.metadata, self.codec_sr, self.segment_dur, mix_bool=True, augment_bool=True)
+        audio = load_random_audio_mix(self.metadata, index, self.codec_sr, self.segment_dur, mix_bool=False, augment_bool=False)
+        audio = audio[np.newaxis, :]
+        return audio
+
 
 
 class ValidationDataset(Dataset):
@@ -156,21 +194,20 @@ class ValidationDataset(Dataset):
                  metadata_path: str,
                  data_per_epoch: int,
                  segment_dur: float,
+                 n_epochs: int
                  ):
         self.codec_sr = codec_sr
         self.segment_dur = segment_dur
         self.data_per_epoch = data_per_epoch
         self.metadata = self.load_dataframe(metadata_path)
+        self.n_epochs = n_epochs
 
     def __len__(self):
         return self.data_per_epoch
 
     def load_dataframe(self, metadata_path) -> pd.DataFrame:
         try:
-            with open(metadata_path, 'rb') as handle:
-                print(f'Loading data from cache: {metadata_path}.')
-                df = pd.read_csv(handle)
-
+            df = pd.read_csv(metadata_path)
         except:
             print(f'Cannot locate caches at {metadata_path}. Collecting data...')
             df = load_from_dataset(subset='validation')
@@ -180,7 +217,10 @@ class ValidationDataset(Dataset):
 
     @torch.no_grad()
     def __getitem__(self, index):
-        return load_random_audio_mix(self.metadata, self.codec_sr, self.segment_dur, mix_bool=True, augment_bool=True)
+        audio = load_random_audio_mix(self.metadata, index, self.codec_sr, self.segment_dur, mix_bool=False, augment_bool=False)
+        audio = audio[np.newaxis, :]
+        return audio
+
 
 class TestDataset(torch.utils.data.Dataset):
     def __init__(self, *,
