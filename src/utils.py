@@ -138,6 +138,6 @@ def create_trace(y_ref, frame_dim, loss_rate: int=10, random_trace:bool = False,
 
 def simulate_packet_loss(codes_ref: np.ndarray, trace: np.ndarray, packet_dim:int) -> np.ndarray:
     codes_lost = deepcopy(codes_ref)
-    for i, is_lost in enumerate(trace[0,:]):
+    for i, is_lost in enumerate(trace):
         if is_lost: codes_lost[..., :, i] = 0
     return codes_lost

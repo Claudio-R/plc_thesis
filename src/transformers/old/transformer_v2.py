@@ -2,8 +2,7 @@ import math
 import torch
 import torch.nn as nn
 from typing import Optional
-from rotary_embedding_torch import RotaryEmbedding
-import torch.nn.functional as F
+# from rotary_embedding_torch import RotaryEmbedding
 
 class InputEmbeddings(nn.Module):
     """Linear layer used for input projections """
@@ -166,35 +165,6 @@ class MultiHeadAttentionBlock(nn.Module):
 
         return x
 
-class RMSNorm(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.scale = dim ** 0.5
-        self.gamma = nn.Parameter(torch.ones(dim))
-
-    def forward(self, x):
-        return F.normalize(x, dim=-1) * self.scale * self.gamma
-
-
-class ResCumSumLayer(nn.Module):
-    def __init__(self, dim: int, mult: float = 1., dropout: float = 0.):
-        super().__init__()
-        dim_inner = int(mult * dim)
-        self.block = nn.Sequential(
-            RMSNorm(dim),
-            nn.Linear(dim, dim_inner),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(dim_inner, dim),
-            nn.Dropout(dropout)
-        )
-
-    def forward(self, x):
-        # input size: (B, seq_len, dim)
-        x = torch.cumsum(x, dim=-2)
-        x = self.block(x)
-        return x
-
 
 class TransformerDecoderBlock(nn.Module):
     """ Decoder Block
@@ -206,8 +176,6 @@ class TransformerDecoderBlock(nn.Module):
         super().__init__()
         self.attention_block = MultiHeadAttentionBlock(d_model, d_attn, n_heads, dropout, dropout_attn)
         self.feed_forward_block = FeedForwardBlock(d_model, d_model * 4, dropout)
-        self.rcs_block = ResCumSumLayer(d_model, 4., dropout)
-        self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
     def forward(self, x, mask):
         """
@@ -218,10 +186,11 @@ class TransformerDecoderBlock(nn.Module):
             returns:
             x: (B, T, D)
         """
+        # New: Moved here as we could think of a scenario in which x.size() changes between TransformerDecoderBlocks
         x = x + self.attention_block(x, x, x, mask)
         x = x + self.feed_forward_block(x)
-        x = x + self.rcs_block(x)
         return x
+
 
 class TransformerDecoder(nn.Module):
     def __init__(self, n_layers: int, d_model: int, d_attn: int, n_heads: int, dropout: float, dropout_attn: float) -> None:
@@ -256,15 +225,14 @@ class Transformer(nn.Module):
         self.dropout = config["transformer"]["dropout"]
         self.dropout_attn = config["transformer"]["dropout_attn"]
         self.device = config["device"]
-        self.context_length = config["codec"]["sample_rate"] * config["segment_dur"] # 48000 samples
-        self.max_sequence_length = self.context_length / config['frame_dim'] # 150 frames
+        self.context_length = config["codec"]["sample_rate"] * config["segment_dur"]
 
         self.input_embeddings = InputEmbeddings(self.n_codebooks, self.codebook_size, self.d_model)
         self.decoder = TransformerDecoder(self.n_layers, self.d_model, self.d_attn, self.n_heads, self.dropout, self.dropout_attn)
         self.output_projection = OutputProjections(self.n_codebooks, self.codebook_size, self.d_model)
-
     def forward(self, x):
         """ codes: (B, N, T) --> codes: (B, N, T) """
+        # At inference time, T might be less than context length
         mask = nn.Transformer.generate_square_subsequent_mask(sz=x.size(-1), device=self.device)
         x = self.input_embeddings(x)  # (B, N, T) --> (B, T, D)
         x = self.decoder(x, mask)  # (B, T, D) --> (B, T, D)
@@ -275,4 +243,4 @@ class Transformer(nn.Module):
         logits = self.forward(x)
         codebook_index_probs = torch.nn.functional.softmax(logits, dim=-1)  # shape: (B, n_codebooks, S, C)
         pred_codes = torch.argmax(codebook_index_probs, dim=-1)
-        return logits, pred_codes
+        return pred_codes

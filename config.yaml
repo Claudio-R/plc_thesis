@@ -1,6 +1,14 @@
-version: '1.0.0'
+# 2.0.1 segment_dur=2
+# 2.0.2 n_layers=8
+# 2.0.3 d_model=1024
+# 2.0.4 all_above
+# 3.0.1 output Residual Connections, segments_dur = 2
+# 4.0.1 output RNN, segments_dur = 2
 
-segment_dur: 2 # seconds, more gives problem with the dataset
+version: '4.0.1'
+mode: outputRNN # naive, resConnections, outputRNN
+
+segment_dur: 2
 device: cuda:0
 frame_dim: 320
 
@@ -13,7 +21,7 @@ resume: false
 save: true
 epoch_to_save: 25
 
-ckpt_path: meta/checkpoint
+dir_ckp: meta/checkpoint
 speech_dataset: dataset/vctk.csv
 environment_dataset: dataset/fsd50k.csv
 music_dataset: dataset/jamendo.csv
@@ -23,9 +31,8 @@ tests_dir: tests
 
 codec:
   sample_rate: 24000
-  n_codebooks: 4
   codebook_size: 1024
-  bitrate: 3.0
+  kbps: 6.0
 
 transformer:
   d_model: 512

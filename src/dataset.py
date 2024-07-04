@@ -14,9 +14,13 @@ import librosa
 import lightning as L
 from src.codecs.encodec24kHz import EnCodec24kHz
 
+# TODO: test dataset, predict dataset
 class VCTKDataModule(L.LightningDataModule):
     def __init__(self, train_dataset:Dataset=None, val_dataset:Dataset=None, test_dataset:Dataset=None, predict_dataset:Dataset=None):
         super().__init__()
+        with open('config.yaml') as handle:
+            config = yaml.load(handle, Loader=yaml.FullLoader)
+
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
         self.test_dataset = test_dataset
@@ -31,9 +35,6 @@ class VCTKDataModule(L.LightningDataModule):
 
     def test_dataloader(self):
         return DataLoader(dataset=self.test_dataset, batch_size=self.batch_size, shuffle=False)
-
-    def predict_dataloader(self):
-        return DataLoader(dataset=self.predict_dataset, batch_size=1, shuffle=False)
 
 def load_from_dataset(subset: str,
                       music_dataset: str = "/nas/home/crapisarda/Medley-solo-DB",
@@ -84,23 +85,13 @@ def load_from_dataset(subset: str,
 
 def load_audio_segment(df: pd.DataFrame, idx: int, codec_sr: int, segment_dur: float,
                        p: list = [0.3, 0.3, 0.3, 0.3, 0.3], augment_bool:bool = False) -> torch.Tensor:
-    """
-    Load a random audio file according to probability and applies audio augmentation
-    :returns:
-    audio_data: Tensor of shape (1, segment_dur*sample_rate)
-    """
-    # TODO: use indexing and check duration (prepare data using VCTKDataModule)
-    # audio_type = "speech" if torch.rand(1) > 0.5 else "music"
-    audio_type = "speech"
-    sample = df.loc[((df.type == audio_type) & (df.duration >= segment_dur))].sample()
 
-    dur = sample["duration"].values[0]
+
+    sample = df.loc[df['duration'] >= segment_dur].sample(1)
     path = sample["path"].values[0]
+    dur = sample["duration"].values[0]
     random_offset = random.uniform(0, dur - (segment_dur))
-
-    # Applies resample
-    # BUG: ta.load carica frammenti di lunghezza random
-    audio, sr = librosa.load(path, sr=codec_sr, offset=random_offset, duration=(segment_dur), mono=True)
+    audio, sr = librosa.load(path, sr=codec_sr, offset=random_offset, duration=segment_dur, mono=True)
 
     if augment_bool:
         augment = Compose([
@@ -112,30 +103,11 @@ def load_audio_segment(df: pd.DataFrame, idx: int, codec_sr: int, segment_dur: f
         ])
         audio = augment(audio, sample_rate=codec_sr)
 
-    audio = audio[:int((segment_dur) * codec_sr)]
-    # wave24kHz = wave24kHz[np.newaxis, :int((segment_dur) * codec_sr)]
-
+    try:
+        audio = audio[:int((segment_dur) * codec_sr)]
+    except:
+        print('qualcosa non va')
     return audio
-
-    # sample = df.iloc[[idx]]
-    # path = sample["path"].values[0]
-    # dur = sample["duration"].values[0]
-    # random_offset = random.uniform(0, dur - (segment_dur))
-    # audio, sr = librosa.load(path, sr=codec_sr, offset=random_offset, duration=(segment_dur), mono=True)
-    #
-    # if augment_bool:
-    #     augment = Compose([
-    #         AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=p[0]),
-    #         PolarityInversion(p=p[1]),
-    #         PitchShift(min_semitones=-4, max_semitones=4, p=p[2]),
-    #         TanhDistortion(p=p[3]),
-    #         TimeStretch(min_rate=1, max_rate=1.25, p=p[4]),
-    #     ])
-    #     audio = augment(audio, sample_rate=codec_sr)
-    #
-    # audio = audio[np.newaxis, :int((segment_dur) * codec_sr)]
-    # return audio
-
 
 def load_random_audio_mix(df: pd.DataFrame, idx, codec_sr: int, segment_dur: float,
                           alpha: float = 2.0,
@@ -152,6 +124,20 @@ def load_random_audio_mix(df: pd.DataFrame, idx, codec_sr: int, segment_dur: flo
 
     return audio
 
+class VCTKDataset(Dataset):
+    def __init__(self, *,
+                 codec_sr:int=24000,
+                 segment_dur:float=2.0,
+                 ):
+        self.codec_sr = codec_sr
+        self.data = pd.read_csv(metadata_path)
+        self.data = self.data.loc[self.data['duration'] >= segment_dur]
+    def __len__(self):
+        self.data.shape[0]
+    def __getitem__(self, index):
+        audio = load_random_audio_mix(self.metadata, index, self.codec_sr, self.segment_dur)
+        audio = audio[np.newaxis, :]
+        return audio
 
 class TrainingDataset(Dataset):
     def __init__(self, *,
@@ -159,13 +145,11 @@ class TrainingDataset(Dataset):
                  metadata_path: str,
                  data_per_epoch: int,
                  segment_dur: float,
-                 n_epochs: int
                  ):
         self.codec_sr = codec_sr
         self.data_per_epoch = data_per_epoch
         self.segment_dur = segment_dur
         self.metadata = self.load_dataframe(metadata_path)
-        self.n_epochs = n_epochs
         self.codec = EnCodec24kHz()
 
     def load_dataframe(self, metadata_path) -> pd.DataFrame:
@@ -175,6 +159,7 @@ class TrainingDataset(Dataset):
             print(f'Cannot locate caches at {metadata_path}. Collecting data...')
             df = load_from_dataset(subset='training')
             df.to_csv(metadata_path, index=False)
+        # df = df.loc[df['duration'] >= self.segment_dur]
         return df
 
     def __len__(self):
@@ -186,21 +171,17 @@ class TrainingDataset(Dataset):
         audio = audio[np.newaxis, :]
         return audio
 
-
-
 class ValidationDataset(Dataset):
     def __init__(self, *,
                  codec_sr: int,
                  metadata_path: str,
                  data_per_epoch: int,
                  segment_dur: float,
-                 n_epochs: int
                  ):
         self.codec_sr = codec_sr
         self.segment_dur = segment_dur
         self.data_per_epoch = data_per_epoch
         self.metadata = self.load_dataframe(metadata_path)
-        self.n_epochs = n_epochs
 
     def __len__(self):
         return self.data_per_epoch
@@ -212,7 +193,6 @@ class ValidationDataset(Dataset):
             print(f'Cannot locate caches at {metadata_path}. Collecting data...')
             df = load_from_dataset(subset='validation')
             df.to_csv(metadata_path, index=False)
-
         return df
 
     @torch.no_grad()
@@ -231,7 +211,7 @@ class TestDataset(torch.utils.data.Dataset):
                  use_random_trace:bool = False):
         self.codec_sr = codec_sr
         self.segment_dur = segment_dur
-        self.metadata = self.load_dataframe(metadata_path)
+        self.dataframe = self.load_dataframe(metadata_path)
         self.frame_dim = frame_dim
         self.use_random_trace = use_random_trace
 
@@ -254,27 +234,65 @@ class TestDataset(torch.utils.data.Dataset):
         return df
 
     def __len__(self):
-        return self.metadata.shape[0]
+        return self.dataframe.shape[0]
 
     @torch.no_grad()
     def __getitem__(self, index):
-        sample = self.metadata.loc[index]
-        wave24kHz, sr = librosa.load(sample.path, sr=self.codec_sr, mono=True)
-        wave24kHz = wave24kHz[np.newaxis, :]
+        sample = self.dataframe.loc[index]
+        audio, sr = librosa.load(sample.path, sr=self.codec_sr, mono=True)
+        audio = audio[np.newaxis, :]
+        # Create trace
+        trace = create_trace(audio, self.frame_dim, random_trace=self.use_random_trace)
+        return audio, trace
+
+class PredictDataset(torch.utils.data.Dataset):
+    def __init__(self, *,
+                 codec_sr: int,
+                 metadata_path: str,
+                 segment_dur: float,
+                 frame_dim: int,
+                 use_random_trace:bool = False):
+        self.codec_sr = codec_sr
+        self.segment_dur = segment_dur
+        self.dataframe = self.load_dataframe(metadata_path)
+        self.frame_dim = frame_dim
+        self.use_random_trace = use_random_trace
+
+    def load_dataframe(self, metadata_path) -> pd.DataFrame:
+        try:
+            with open(metadata_path, 'rb') as handle:
+                print(f'Loading data from cache: {metadata_path}.')
+                df = pd.read_csv(handle)
+        except Exception as e:
+            print(f'Cannot locate caches at {metadata_path}. Collecting data...')
+            print(e)
+            df = load_from_dataset(subset='test')
+            filtered_speech = df[df['type'] == 'speech'].sample(n=10, random_state=42)
+            filtered_music = df[df['type'] == 'music'].sample(n=10, random_state=42)
+
+            # Concatenate the sampled rows
+            df = pd.concat([filtered_speech, filtered_music], ignore_index=True)
+            df.to_csv(metadata_path, index=False)
+
+        return df
+
+    def __len__(self):
+        return self.dataframe.shape[0]
+
+    @torch.no_grad()
+    def __getitem__(self, index):
+        sample = self.dataframe.loc[index]
+        audio, sr = librosa.load(sample.path, sr=self.codec_sr, mono=True)
+        audio = audio[np.newaxis, :]
 
         # Adapt PLC Challenge traces to new samplerate
-        if 'trace' in self.metadata.columns:
-            trace = sample.trace.split()
-            num_packets = math.ceil(wave24kHz.shape[-1] // self.frame_dim)
-            pad_length = num_packets - len(trace)
-            for i in range(pad_length):
-                trace.append(trace[i])
-            assert(len(trace) == num_packets)
-            trace = np.array([int(i) for i in trace])
+        trace = sample.trace.split()
+        num_packets = math.ceil(audio.shape[-1] // self.frame_dim)
+        pad_length = num_packets - len(trace)
+        for i in range(pad_length):
+            trace.append(trace[i])
+        assert(len(trace) == num_packets)
+        trace = np.array([int(i) for i in trace])
 
-        # Or create new traces
-        else:
-            trace = create_trace(wave24kHz, self.frame_dim, random_trace=self.use_random_trace)
-
-        return wave24kHz, trace
+        return audio, trace
 

@@ -2,7 +2,7 @@ import yaml
 from torch.utils.data import DataLoader
 
 from .dataset import TrainingDataset, ValidationDataset
-from src.lightning_transformer.model import Model
+from src.model.model import Model
 import lightning
 
 def train(config_path):

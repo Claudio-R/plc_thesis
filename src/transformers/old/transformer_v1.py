@@ -2,39 +2,40 @@ import math
 import torch
 import torch.nn as nn
 from typing import Optional
-from rotary_embedding_torch import RotaryEmbedding
+# from rotary_embedding_torch import RotaryEmbedding
 
-class InputEmbeddings(nn.Module):
+
+class InputProjections(nn.Module):
     """Linear layer used for input projections """
 
-    def __init__(self, n_codebooks: int, codebook_size: int, d_model: int) -> None:
+    def __init__(self, n_codebooks: int, d_model: int) -> None:
         super().__init__()
-        self.n_codebooks = n_codebooks
-        self.embed_layers = nn.ModuleList([nn.Embedding(codebook_size, d_model) for _ in range(n_codebooks)])
-        # self.embedding = nn.Embedding(codebook_size, d_model)
+        self.projection = nn.Linear(n_codebooks, d_model, bias=False)
 
     def forward(self, x):
-        """ x: (B, N, T) --> embeddings: (B, T, D) """
-        embeddings = sum([embed(x[:, i, :]) for i, embed in enumerate(self.embed_layers)])
-        return embeddings
+        """ (B, N, T) --> (B, T, N) --> (B, T, D) """
+        x = x.transpose(-2, -1)  # In general, transposing with negative indices make it work also for unbatched tensors
+        x = self.projection(x)
+        return x
 
 
 class OutputProjections(nn.Module):
     """ Linear layer used for output projections """
 
-    def __init__(self, n_codebooks: int, codebook_size: int, d_model: int) -> None:
+    def __init__(self, d_model: int, n_codebooks: int) -> None:
         super().__init__()
-        self.projection = nn.ModuleList([nn.Linear(d_model, codebook_size) for _ in range(n_codebooks)])
+        self.projection = nn.Linear(d_model, n_codebooks, bias=False)
 
     def forward(self, x):
-        """ x: (B, T, D) --> logits: (B, N, T, C) """
-        logits = [proj(x) for proj in self.projection]
-        logits = torch.stack(logits, dim=1) # logits.shape==(B, n_codebooks, S, C)
-        return logits
+        """ (B, T, D) --> (B, T, N) --> (B, N, T) """
+        x = self.projection(x)
+        x = torch.sigmoid(x)  # Ensure that predicted codes take values in [0, 1] according to PLCModel.code_transform
+        x = x.transpose(-2, -1)
+        return x
 
 
 class LayerNormalization(nn.Module):
-    # TODO: substitute with  torch.norm
+    """ Add & Norm layer """
 
     def __init__(self, features: int, eps: float = 1e-6) -> None:
         super().__init__()
@@ -57,7 +58,7 @@ class FeedForwardBlock(nn.Module):
         super().__init__()
 
         self.block = nn.Sequential(
-            nn.LayerNorm(d_model),
+            LayerNormalization(d_model),
             nn.Linear(d_model, d_ff),
             activation,
             nn.Dropout(dropout),
@@ -83,8 +84,7 @@ class MultiHeadAttentionBlock(nn.Module):
         self.n_heads = n_heads
         assert self.d_attn % self.n_heads == 0, "d_attn is not divisible by n_heads"
 
-        # self.norm = LayerNormalization(self.d_model)  # New: norm is now part of attention block
-        self.norm = nn.LayerNorm(self.d_model)
+        self.norm = LayerNormalization(self.d_model)  # New: norm is now part of attention block
 
         self.d_h = self.d_attn // n_heads
         self.w_q = nn.Linear(self.d_model, self.d_attn, bias=False)  # Wq
@@ -154,6 +154,7 @@ class MultiHeadAttentionBlock(nn.Module):
         x, __ = self.attention(query, key, value, mask)
 
         # Combine all the heads together: (B, h, T, d_h) --> (B, T, h, d_h) --> (B, T, D)
+        # x = x.transpose(1, 2).contiguous().view(x.size(0), -1, self.n_heads * self.d_h)
         x = x.transpose(-3, -2)
         x = x.contiguous()
         x = x.view(*x.shape[:-2], self.n_heads * self.d_h)
@@ -176,8 +177,9 @@ class TransformerDecoderBlock(nn.Module):
         super().__init__()
         self.attention_block = MultiHeadAttentionBlock(d_model, d_attn, n_heads, dropout, dropout_attn)
         self.feed_forward_block = FeedForwardBlock(d_model, d_model * 4, dropout)
+        self.device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
-    def forward(self, x, mask):
+    def forward(self, x):
         """
             params:
             x: (B, T, D)
@@ -187,8 +189,10 @@ class TransformerDecoderBlock(nn.Module):
             x: (B, T, D)
         """
         # New: Moved here as we could think of a scenario in which x.size() changes between TransformerDecoderBlocks
+        mask = nn.Transformer.generate_square_subsequent_mask(sz=x.size(-2))#, device=self.device) # Generates an additive mask for the target sequence
         x = x + self.attention_block(x, x, x, mask)
         x = x + self.feed_forward_block(x)
+
         return x
 
 
@@ -199,7 +203,7 @@ class TransformerDecoder(nn.Module):
             TransformerDecoderBlock(d_model, d_attn, n_heads, dropout, dropout_attn) for _ in range(n_layers)
         ])
 
-    def forward(self, x, mask):
+    def forward(self, x):
         """
             params:
             x: FloatTensor(B, T, D)
@@ -208,39 +212,38 @@ class TransformerDecoder(nn.Module):
             x: FloatTensor(B, T, D)
         """
         for decoder_block in self.decoder_blocks:
-            x = decoder_block(x, mask)
+            x = decoder_block(x)
         return x
 
 
 class Transformer(nn.Module):
     """ Transformer model """
-    def __init__(self, config):
+    def __init__(
+            self,
+            n_codebooks: int = 9,
+            codebook_size: int = 1024,
+            d_model: int = 512,
+            d_attn: Optional[int] = None,
+            n_heads: int = 8,
+            n_layers: int = 6,
+            dropout: float = 0.1,
+            dropout_attn: float = 0.0
+    ):
         super().__init__()
-        self.n_codebooks = config["codec"]["n_codebooks"]
-        self.codebook_size = config["codec"]["codebook_size"]
-        self.d_model = config["transformer"]["d_model"]
-        self.d_attn = config["transformer"]["d_attn"]
-        self.n_heads = config["transformer"]["n_heads"]
-        self.n_layers = config["transformer"]["n_layers"]
-        self.dropout = config["transformer"]["dropout"]
-        self.dropout_attn = config["transformer"]["dropout_attn"]
-        self.device = config["device"]
-        self.context_length = config["codec"]["sample_rate"] * config["segment_dur"]
+        self.n_codebooks = n_codebooks
+        self.codebook_size = codebook_size
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.n_layers = n_layers
+        self.dropout = dropout
 
-        self.input_embeddings = InputEmbeddings(self.n_codebooks, self.codebook_size, self.d_model)
-        self.decoder = TransformerDecoder(self.n_layers, self.d_model, self.d_attn, self.n_heads, self.dropout, self.dropout_attn)
-        self.output_projection = OutputProjections(self.n_codebooks, self.codebook_size, self.d_model)
+        self.input_projection = InputProjections(n_codebooks, d_model)
+        self.decoder = TransformerDecoder(n_layers, d_model, d_attn, n_heads, dropout, dropout_attn)
+        self.output_projection = OutputProjections(d_model, n_codebooks) # (512, 1024) = 11.6 ms predetti per packet
+
     def forward(self, x):
         """ codes: (B, N, T) --> codes: (B, N, T) """
-        # At inference time, T might be less than context length
-        mask = nn.Transformer.generate_square_subsequent_mask(sz=x.size(-1), device=self.device)
-        x = self.input_embeddings(x)  # (B, N, T) --> (B, T, D)
-        x = self.decoder(x, mask)  # (B, T, D) --> (B, T, D)
-        x = self.output_projection(x)  # (B, T, D) --> (B, N, T, C)
+        x = self.input_projection(x)  # (B, N, T) --> (B, T, D)
+        x = self.decoder(x)  # (B, T, D) --> (B, T, D)
+        x = self.output_projection(x)  # (B, T, D) --> (B, N, T)
         return x
-
-    def predict(self, x):
-        logits = self.forward(x)
-        codebook_index_probs = torch.nn.functional.softmax(logits, dim=-1)  # shape: (B, n_codebooks, S, C)
-        pred_codes = torch.argmax(codebook_index_probs, dim=-1)
-        return pred_codes
