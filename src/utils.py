@@ -5,8 +5,9 @@ import torch
 import pandas as pd
 import random
 import math
-import src.transformers
+from src.transformers import *
 import src.codecs
+import torch
 
 def resume_from_checkpoint(model, optimizer, current_version:str, map_location:str='cuda:1'):
 
@@ -61,15 +62,32 @@ def load_codec(codec_name:str='encodec', kbps:float=6.):
     else:
         raise ValueError(f'Please provide a valid codec: [{codec_name}]')
 
-def load_transformer(config):
+def load_transformer(config,
+                     n_codebooks, codebook_size, sample_rate, frame_dim):
     version = config['version']
     version_id = version.split('.')[0]
-    if version_id == '1':
-        return src.transformers.TransformerV1()
-    elif version_id == '2':
-        return src.transformers.TransformerV2(config)
+    if version_id == '2':
+        return TransformerV2(config, n_codebooks, codebook_size, sample_rate, frame_dim)
     elif version_id == '3':
-        return src.transformers.TransformerV3(config)
+        return TransformerV3(config, n_codebooks, codebook_size, sample_rate, frame_dim)
+    elif version_id == '4':
+        return TransformerV4(config, n_codebooks, codebook_size, sample_rate, frame_dim)
+    elif version_id == '5':
+        return TransformerV5(config, n_codebooks, codebook_size, sample_rate, frame_dim)
+
+    else:
+        raise ValueError(f'Invalid version. Exiting.')
+
+def get_mode(version):
+    version_id = version.split('.')[0]
+    if version_id == '2':
+        return 'naive'
+    elif version_id == '3':
+        return 'resConnections'
+    elif version_id == '4':
+        return 'outputRNN'
+    elif version_id == '5':
+        return 'split'
     else:
         raise ValueError(f'Invalid version. Exiting.')
 
@@ -136,7 +154,7 @@ def create_trace(y_ref, frame_dim, loss_rate: int=10, random_trace:bool = False,
     return trace
 
 
-def simulate_packet_loss(codes_ref: np.ndarray, trace: np.ndarray, packet_dim:int) -> np.ndarray:
+def simulate_packet_loss(codes_ref: torch.Tensor, trace: np.ndarray) -> torch.Tensor:
     codes_lost = deepcopy(codes_ref)
     for i, is_lost in enumerate(trace):
         if is_lost: codes_lost[..., :, i] = 0

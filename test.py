@@ -2,12 +2,12 @@ import os
 import yaml
 import warnings
 import torch
-from torch.utils.data import DataLoader
 from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.loggers import TensorBoardLogger
 
-from src.dataset import TestDataset
-from src.model.model import Model
+from src.dataset import MyDataModule
+from src.model import Model
+from src.utils import get_mode
 
 warnings.filterwarnings("ignore")
 torch.set_float32_matmul_precision('medium')
@@ -17,14 +17,10 @@ if __name__ == "__main__":
     with open('config.yaml') as handle:
         config = yaml.load(handle, Loader=yaml.FullLoader)
 
-    segment_dur = config['segment_dur']
-    batch_size = config['batch_size']
-    n_epochs = config['n_epochs']
-    steps_per_epoch = config['steps_per_epoch']
-    num_workers = config['num_workers']
-    mode = config['mode']
+    model_mode = config['model_mode']
     version = config['version']
-    dir_ckp = f'{config['dir_ckp']}/{mode}/{version}/'
+    mode = get_mode(version)
+    dir_ckp = f'{config['dir_ckp']}/{model_mode}/{mode}/{version}/'
 
     # MODEL
     if os.path.exists(dir_ckp):
@@ -41,21 +37,13 @@ if __name__ == "__main__":
         raise FileNotFoundError('No checkpoint found at {}'.format(dir_ckp))
 
     # LOGGER
-    logger = TensorBoardLogger(f"meta/tb_logs", name=f"{mode}_model", version=version)
+    logger = TensorBoardLogger(f"meta/tb_logs/{model_mode}", name=f"{mode}", version=version)
 
-    # DATALOADERS
-    test_ds = TestDataset(codec_sr=model.codec.sample_rate,
-                          metadata_path='dataset/plc_challenge/test.csv',
-                          segment_dur=segment_dur,
-                          frame_dim=model.codec.frame_dim)
-
-    test_loader = DataLoader(test_ds, shuffle=False)
+    dm = MyDataModule()
 
     trainer = Trainer(
         strategy='ddp_find_unused_parameters_true',
         logger=logger)
-    trainer.test(model, test_loader)
+    trainer.test(model, datamodule=dm)
+    trainer.predict(model, datamodule=dm)
     print("Done!")
-
-
-

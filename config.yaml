@@ -5,21 +5,12 @@
 # 3.0.1 output Residual Connections, segments_dur = 2
 # 4.0.1 output RNN, segments_dur = 2
 
-version: '4.0.1'
-mode: outputRNN # naive, resConnections, outputRNN
-
+version: '2.0.1'
 segment_dur: 2
-device: cuda:0
 frame_dim: 320
-
 batch_size: 64
-n_epochs: 400
-steps_per_epoch: 250
-learning_rate: 0.0001
+model_mode: delayed #parallel, delayed
 num_workers: 8
-resume: false
-save: true
-epoch_to_save: 25
 
 dir_ckp: meta/checkpoint
 speech_dataset: dataset/vctk.csv
@@ -41,3 +32,4 @@ transformer:
   n_layers: 4
   dropout: 0.1
   dropout_attn: 0.0
+  special_token: 1025

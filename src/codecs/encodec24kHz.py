@@ -62,7 +62,7 @@ class EnCodec24kHz(torch.nn.Module):
             codes = encoded_frames[0][0]
         return codes
 
-    def decode(self, codes: torch.Tensor) -> Tuple[torch.Tensor, int]:
+    def decode(self, codes: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
             encoded_frames = [(codes, None)]
             audio = self.model.decode(encoded_frames)
