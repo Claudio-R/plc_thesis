@@ -2,7 +2,6 @@ import torch
 import torchaudio as ta
 import numpy as np
 import encodec
-from typing import Tuple
 
 class EnCodec24kHz(torch.nn.Module):
 

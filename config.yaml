@@ -4,11 +4,13 @@
 # 2.0.4 all_above
 # 3.0.1 output Residual Connections, segments_dur = 2
 # 4.0.1 output RNN, segments_dur = 2
+# 5.0.1 split
+# 6.0.1 delayed 1 step
 
-version: '2.0.1'
+version: '6.0.1'
 segment_dur: 2
 frame_dim: 320
-batch_size: 64
+batch_size: 256
 model_mode: delayed #parallel, delayed
 num_workers: 8
 

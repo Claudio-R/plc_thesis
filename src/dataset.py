@@ -38,13 +38,13 @@ class MyDataModule(L.LightningDataModule):
             batch_size=batch_size, shuffle=False, num_workers=num_workers)
         self.val_loader = DataLoader(
             MyDataset(val_csv, codec_sr, segment_dur),
-            shuffle=False, num_workers=num_workers)
+            batch_size=batch_size, shuffle=False, num_workers=num_workers)
         self.test_loader = DataLoader(
             MyDataset(test_csv, codec_sr, segment_dur),
-            shuffle=False, num_workers=num_workers)
+            batch_size=batch_size, shuffle=False, num_workers=num_workers)
         self.predict_loader = DataLoader(
             PredictDataset(predict_csv, codec_sr, segment_dur, frame_dim),
-            shuffle=False, num_workers=num_workers)
+            batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
         return self.train_loader

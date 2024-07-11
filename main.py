@@ -26,10 +26,10 @@ if __name__ == "__main__":
     # CHECKPOINT
     checkpoint_callback = ModelCheckpoint(
         dirpath=dir_ckp,
-        filename='my_model-{epoch:02d}-{accuracy:.5f}',
+        filename='my_model-{epoch:04d}-{accuracy:.5f}',
         monitor='accuracy',
         mode='max',
-        save_top_k=5,
+        save_top_k=3,
         verbose=True
     )
 
@@ -47,9 +47,9 @@ if __name__ == "__main__":
         strategy='ddp_find_unused_parameters_true',
         callbacks=[checkpoint_callback],
         logger=logger)
-    trainer.fit(model, datamodule=dm, ckpt_path='last')
+    trainer.fit(model, datamodule=dm, ckpt_path='meta/checkpoint/delayed/delayed/6.0.1/my_model-epoch=00-accuracy=0.05873-v1.ckpt')
     trainer.test(model, datamodule=dm, ckpt_path='best')
-    trainer.predict(model, datamodule=dm, ckpt_path='best')
+    # trainer.predict(model, datamodule=dm, ckpt_path='best')
     print("Done!")
 
 

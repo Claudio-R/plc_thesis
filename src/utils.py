@@ -1,7 +1,6 @@
 import os
 import numpy as np
 from copy import deepcopy
-import torch
 import pandas as pd
 import random
 import math
@@ -74,6 +73,8 @@ def load_transformer(config,
         return TransformerV4(config, n_codebooks, codebook_size, sample_rate, frame_dim)
     elif version_id == '5':
         return TransformerV5(config, n_codebooks, codebook_size, sample_rate, frame_dim)
+    elif version_id == '6':
+        return TransformerV6(config, n_codebooks, codebook_size, sample_rate, frame_dim)
 
     else:
         raise ValueError(f'Invalid version. Exiting.')
@@ -88,6 +89,8 @@ def get_mode(version):
         return 'outputRNN'
     elif version_id == '5':
         return 'split'
+    elif version_id == '6':
+        return 'delayed'
     else:
         raise ValueError(f'Invalid version. Exiting.')
 

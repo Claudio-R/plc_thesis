@@ -20,18 +20,14 @@ class Model(L.LightningModule):
         self.codec = EnCodec24kHz(config['codec']['kbps'])
         self.codebook_size = self.codec.codebook_size if self.model_mode == 'parallel' else self.codec.codebook_size+1
         self.version = config['version']
-        self.transformer = load_transformer(config,
-                                       self.codec.n_codebooks,
-                                       self.codebook_size,
-                                       self.codec.sample_rate,
-                                       self.codec.frame_dim)
-        # self.model_mode = 'parallel'
         self.mode = get_mode(self.version)
         self.nq = self.codec.n_codebooks
-        self.pad_length = self.nq - 1
-        self.special_token = 1024
         # meaningful only in range [nq, 1]: nq: predict nq steps forward in a step, 1, predict just one step forward
-        self.forward_steps = self.nq - 0
+        self.transformer = load_transformer(config,
+                                            self.nq,
+                                            self.codebook_size,
+                                            self.codec.sample_rate,
+                                            self.codec.frame_dim)
 
         # Loss functions
         self.code_loss_fn = torch.nn.CrossEntropyLoss()
@@ -91,7 +87,7 @@ class Model(L.LightningModule):
     def training_step(self, batch, batch_idx):
         self.codec.eval()
         codes = self.codec.encode(batch)
-        src_codes, tgt_codes = self.split_codes(codes)
+        src_codes, tgt_codes = self.transformer.split_codes(codes)
         logits = self.transformer(src_codes)
         code_loss = self.compute_code_loss(logits, tgt_codes)
         self.log(name="code_loss", value=code_loss, prog_bar=True)
@@ -99,15 +95,17 @@ class Model(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         codes = self.codec.encode(batch)
-        src_codes, tgt_codes = self.split_codes(codes)
-        logits, pred_codes = self.transformer.predict(src_codes)
+        src_codes, tgt_codes = self.transformer.split_codes(codes)
+        logits, pred_codes, packet = self.transformer.predict(src_codes)
         code_loss = self.compute_code_loss(logits, tgt_codes)
-        if self.model_mode == 'delayed':
-            tgt_codes = self.rollback_codes(tgt_codes)
-            pred_codes = self.rollback_codes(pred_codes)
 
-        tgt_audio = self.codec.decode(tgt_codes)
-        pred_audio = self.codec.decode(pred_codes)
+        if self.model_mode == 'delayed':
+            tgt_audio = self.codec.decode(self.transformer.unroll(tgt_codes))
+            pred_audio = self.codec.decode(self.transformer.unroll(pred_codes))
+        else:
+            tgt_audio = self.codec.decode(tgt_codes)
+            pred_audio = self.codec.decode(pred_codes)
+
         audio_loss = self.compute_audio_loss(pred_audio, tgt_audio)
         logs = {
             'code_loss': code_loss,
@@ -119,25 +117,7 @@ class Model(L.LightningModule):
         return audio_loss
 
     def test_step(self, batch, batch_idx):
-        codes = self.codec.encode(batch)
-        src_codes, tgt_codes = self.split_codes(codes)
-        logits, pred_codes = self.transformer.predict(src_codes)
-        code_loss = self.compute_code_loss(logits, tgt_codes)
-        if self.model_mode == 'delayed':
-            tgt_codes = self.rollback_codes(tgt_codes)
-            pred_codes = self.rollback_codes(pred_codes)
-
-        tgt_audio = self.codec.decode(tgt_codes)
-        pred_audio = self.codec.decode(pred_codes)
-        audio_loss = self.compute_audio_loss(pred_audio, tgt_audio)
-        logs = {
-            'code_loss': code_loss,
-            'audio_loss': audio_loss,
-            'accuracy': self.accuracy_fn(pred_codes, tgt_codes),
-            'stoi': self.stoi_fn(pred_audio, tgt_audio)
-        }
-        self.log_dict(logs)
-        return logs
+        return self.validation_step(batch, batch_idx)
 
     def predict_step(self, batch, batch_idx):
         # batch: audio+trace
@@ -161,7 +141,6 @@ class Model(L.LightningModule):
             'prediction accuracy': self.accuracy_fn(z, y),
             'stoi': self.stoi_fn(pred_audio, tgt_audio)
         }
-        # self.log_dict(logs)
 
         # Save audio files and traces
         sr = self.codec.sample_rate
@@ -173,30 +152,31 @@ class Model(L.LightningModule):
                 f.write('{}\n'.format(trace_idx))
         return logs
 
-    def split_codes(self, codes):
-        if self.model_mode == 'parallel':
-            src_codes = codes[..., :-1]
-            tgt_codes = codes[..., 1:]
-        elif self.model_mode == 'delayed':
-            padding_tensor = torch.ones((codes.shape[0], codes.shape[1], self.pad_length)).type_as(codes) * self.special_token
-            codes = torch.cat((codes, padding_tensor), dim=-1)
-            for i in range(1, self.nq):
-                codes[:, i:, :] = torch.roll(codes[:, i:, :], shifts=1, dims=-1)
-            src_codes = codes[..., :-self.nq]
-            tgt_codes = codes[..., self.forward_steps:self.forward_steps+src_codes.shape[-1]] # guarantees shape is the same
-        else:
-            raise NotImplementedError
-        return src_codes, tgt_codes
+    # def split_codes(self, codes):
+    #     if self.model_mode == 'parallel':
+    #         src_codes = codes[..., :-1]
+    #         tgt_codes = codes[..., 1:]
+    #     elif self.model_mode == 'delayed':
+    #         padding_tensor = torch.ones((codes.shape[0], codes.shape[1], self.pad_length)).type_as(codes) * self.special_token
+    #         codes = torch.cat((codes, padding_tensor), dim=-1)
+    #         for i in range(1, self.nq):
+    #             codes[:, i:, :] = torch.roll(codes[:, i:, :], shifts=1, dims=-1)
+    #         src_codes = codes[..., :-self.nq]
+    #         tgt_codes = codes[..., self.nq] # guarantees shape is the same
+    #     else:
+    #         raise NotImplementedError
+    #     return src_codes, tgt_codes
 
     def rollback_codes(self, delayed_codes):
         for i in range(1, self.nq):
             delayed_codes[:, i:, :] = torch.roll(delayed_codes[:, i:, :], shifts=-1, dims=-1)
         delayed_codes = delayed_codes[..., :-(self.nq - 1)]
-        # for pred_codes, remove residual special tokensf
+        # for pred_codes, remove residual special tokens
         delayed_codes[delayed_codes == self.special_token] = 0
         return delayed_codes
 
     def compute_code_loss(self, logits, tgt_codes):
+        tgt_codes = tgt_codes[..., tgt_codes.size(-1)-logits.size(-1):]
         code_loss = sum([self.code_loss_fn(
             logits[:, k, :, :].contiguous().view(-1, logits.size(-1)),
             tgt_codes[:, k, :].contiguous().view(-1))
